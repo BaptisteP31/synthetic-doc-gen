@@ -36,7 +36,9 @@ def fit_pages(
     if measure(0) == target:
         return cache[0][0], 0
     limit = target * MAX_UNITS_PER_PAGE
-    low, high = 0, 1
+    # Une première sonde proportionnelle à la cible évite les petits doublages
+    # pour les documents longs ; la recherche conserve ses bornes exactes.
+    low, high = 0, min(target * 2, limit)
     while measure(high) < target:
         if high == limit:
             raise ValueError(f"impossible d'atteindre {target} pages")

@@ -424,6 +424,8 @@ def _run_batch(config: BatchConfig) -> Iterator[dict]:
                     ):
                         raise FileExistsError(f"fichier cible existant : {path}")
     base_options = RenderOptions(logo=config.logo, signature=config.signature)
+    # Un seul rendu conservé : les précontrôles de grands lots restent bornés en mémoire.
+    fitted_render: tuple[PlannedDocument, Rendered] | None = None
 
     def build(item: PlannedDocument) -> tuple[Document, int]:
         return build_document(
@@ -432,24 +434,41 @@ def _run_batch(config: BatchConfig) -> Iterator[dict]:
 
     def fit(item: PlannedDocument) -> PlannedDocument:
         """Cherche le contenu qui donne exactement ``item.pages`` pages (rendu réel mesuré)."""
+        nonlocal fitted_render
         doc_id = doc_id_for(item.index)
+        current_units = 0
+        best: tuple[int, Rendered] | None = None
+
+        def candidate(units: int) -> Document:
+            nonlocal current_units
+            current_units = units
+            return build_document(
+                item.index, config.base_seed, item.doc_type, config.profile, units
+            )[0]
 
         def native_pages(document: Document) -> int:
-            return renderer.render_native(document, config.profile, doc_id, base_options).pages
+            nonlocal best
+            rendered = renderer.render_native(document, config.profile, doc_id, base_options)
+            if rendered.pages == item.pages and (best is None or current_units < best[0]):
+                best = (current_units, rendered)
+            return rendered.pages
 
         try:
             _, units = fit_pages(
-                lambda k: build_document(
-                    item.index, config.base_seed, item.doc_type, config.profile, k
-                )[0],
+                candidate,
                 native_pages,
                 item.pages,
             )
         except ValueError as exc:
             raise ValueError(f"{doc_id} ({item.doc_type}) : {exc}") from exc
-        return replace(item, units=units)
+        fitted = replace(item, units=units)
+        if best is not None and best[0] == units:
+            fitted_render = (fitted, best[1])
+        return fitted
 
     def render_native(item: PlannedDocument) -> Rendered:
+        if fitted_render is not None and fitted_render[0] == item:
+            return fitted_render[1]
         document, _ = build(item)
         return renderer.render_native(
             document, config.profile, doc_id_for(item.index), base_options
@@ -551,7 +570,12 @@ def _run_batch(config: BatchConfig) -> Iterator[dict]:
         for item, target in documents():
             document, seed = build(item)
             options = scan_options if item.scan else base_options
-            rendered = renderer.render(document, config.profile, doc_id_for(item.index), options)
+            if not item.scan and fitted_render is not None and fitted_render[0] == item:
+                rendered = fitted_render[1]
+            else:
+                rendered = renderer.render(
+                    document, config.profile, doc_id_for(item.index), options
+                )
             record = _manifest_record(
                 index=item.index,
                 base_seed=config.base_seed,
