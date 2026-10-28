@@ -457,9 +457,30 @@ def _run_batch(config: BatchConfig) -> Iterator[dict]:
 
     # Avant toute écriture : une page cible inatteignable échoue sans rien laisser dans le dossier.
     plan = [fit(item) if item.pages is not None else item for item in plan]
+    population_counts = None
     if total_mode and config.target_mean_bytes is not None:
         sample_config = replace(config, count=min(config.calibration_count, config.max_count))
         sample = plan_documents(sample_config)
+        # Compte toute la fenêtre sans rendre ses documents ; ajoute au plus un
+        # représentant de chaque catégorie absente du préfixe.
+        scan_count = 0
+        first_missing = {}
+        present_kinds = {item.scan for item in sample}
+        for index in range(config.start_index, config.start_index + config.max_count):
+            scanned = is_scan(index, config.doc_types, config.scan_ratio)
+            scan_count += scanned
+            if scanned not in present_kinds and scanned not in first_missing:
+                doc_type = doc_type_for(index, config.doc_types)
+                first_missing[scanned] = PlannedDocument(
+                    index,
+                    doc_type,
+                    scanned,
+                    pages_for(config.base_seed, index, doc_type, config.pages)
+                    if config.pages
+                    else None,
+                )
+        sample.extend(first_missing.values())
+        population_counts = (scan_count, config.max_count - scan_count)
         sample = [fit(item) if item.pages is not None else item for item in sample]
     else:
         sample = plan
@@ -473,6 +494,7 @@ def _run_batch(config: BatchConfig) -> Iterator[dict]:
             dpi=config.scan_dpi,
             quality=config.scan_quality,
             render_native=render_native,
+            population_counts=population_counts,
         )
     scan_settings = _final_settings(config, calibration)
     scan_options = RenderOptions(config.logo, config.signature, scan_settings)

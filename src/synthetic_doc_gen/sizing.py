@@ -100,6 +100,7 @@ def calibrate(
     dpi: int | None,
     quality: int | None,
     render_native: Callable[[Planned], Rendered],
+    population_counts: tuple[int, int] | None = None,
 ) -> Calibration:
     """Choisit dpi et qualité JPEG des scans pour approcher la moyenne cible du lot."""
     scans = [item for item in plan if item.scan]
@@ -122,7 +123,10 @@ def calibrate(
     if natives:
         sizes = [len(render_native(item).data) for item in spread(natives, SAMPLE_NATIVES)]
         native_mean = sum(sizes) / len(sizes)
-    needed = (target_mean_bytes * len(plan) - native_mean * len(natives)) / len(scans)
+    scan_count, native_count = population_counts or (len(scans), len(natives))
+    needed = (
+        target_mean_bytes * (scan_count + native_count) - native_mean * native_count
+    ) / scan_count
     warnings: list[str] = []
     if needed <= 0:
         warnings.append(

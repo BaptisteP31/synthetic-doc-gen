@@ -107,3 +107,81 @@ def test_interruption_preserves_manifest(tmp_path, monkeypatch):
     rows = records(out)
     assert len(rows) == 1 and (out / rows[0]["path"]).exists()
     assert not (out / "report.json").exists()
+
+
+def test_sparse_scans_calibration_uses_window_and_pages(tmp_path, monkeypatch):
+    from synthetic_doc_gen import batch
+
+    original = batch.calibrate
+    captured = {}
+
+    def capture(plan, **kwargs):
+        captured["plan"] = plan
+        captured["counts"] = kwargs["population_counts"]
+        return original(plan, **kwargs)
+
+    monkeypatch.setattr(batch, "calibrate", capture)
+    out = tmp_path / "sparse"
+    assert (
+        main(
+            [
+                "generate",
+                "-o",
+                str(out),
+                "--total-size",
+                "1M",
+                "--max-count",
+                "15",
+                "--start-index",
+                "3",
+                "--target-size",
+                "20k",
+                "--scan-ratio",
+                "10%",
+                "--calibration-count",
+                "2",
+                "--pages",
+                "2",
+                "--scan-dpi",
+                "72",
+                "--scan-quality",
+                "50",
+            ]
+        )
+        == 2
+    )
+    plan = captured["plan"]
+    assert len(plan) <= 3
+    assert any(item.scan for item in plan)
+    assert all(item.pages == 2 for item in plan)
+    assert captured["counts"] == (
+        sum(batch.is_scan(i, ["compte-rendu"], 0.1) for i in range(3, 18)),
+        sum(not batch.is_scan(i, ["compte-rendu"], 0.1) for i in range(3, 18)),
+    )
+    report = json.loads((out / "report.json").read_text())
+    assert not any("aucun scan" in warning for warning in report["warnings"])
+    assert any(row["render"]["kind"] == "scan" for row in records(out))
+
+
+def test_no_scan_accessible_warns(tmp_path):
+    out = tmp_path / "none"
+    assert (
+        main(
+            [
+                "generate",
+                "-o",
+                str(out),
+                "--total-size",
+                "1",
+                "--max-count",
+                "2",
+                "--target-size",
+                "20k",
+                "--scan-ratio",
+                "1%",
+            ]
+        )
+        == 0
+    )
+    report = json.loads((out / "report.json").read_text())
+    assert any("aucun scan" in warning for warning in report["warnings"])

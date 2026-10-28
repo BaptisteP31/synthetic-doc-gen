@@ -75,8 +75,15 @@ indicateur `reached`) et `measured.scan_ratio` indique la proportion réelle de 
 un avertissement est affiché et la commande retourne le code 2.
 
 Avec `--target-size`, les réglages sont calibrés une fois sur les premiers
-`--calibration-count` documents (10 par défaut, maximum 100, limité par `--max-count`),
-indépendamment de la longueur finalement produite. Rejouer avec la même graine, les mêmes
+`--calibration-count` documents (10 par défaut, maximum 100, limité par `--max-count`).
+Si nécessaire, un premier scan ou PDF natif accessible dans la fenêtre est ajouté à
+l'échantillon. La moyenne cible utilise la proportion de scans de toute la fenêtre
+`[start-index, start-index + max-count)`, qui peut différer de celle du lot effectivement
+produit : la taille moyenne finale reste une estimation. Si aucun scan n'est accessible,
+un avertissement le signale. Le préflight parcourt cette fenêtre en temps proportionnel à
+`--max-count` ; une limite très grande peut donc ralentir le démarrage, même si peu de
+fichiers sont produits. Les options de pages, couleur, résolution et qualité s'appliquent
+également aux documents de calibration. Rejouer avec la même graine, les mêmes
 options, taille de calibration et environnement reproduit le lot ; les réglages retenus
 figurent dans le rapport. Les vérifications de paramètres et de fichiers existants précèdent la
 génération ; `--force` est interdit dans ce mode. Les pages demandées sont validées au fil de
