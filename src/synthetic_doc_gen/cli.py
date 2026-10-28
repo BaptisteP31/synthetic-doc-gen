@@ -38,7 +38,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "--start-index",
         type=int,
         default=0,
-        help="index du premier document (pour reprendre ou répartir un lot)",
+        help="index du premier document (utiliser un dossier séparé pour chaque lot)",
     )
     gen.add_argument("--force", action="store_true", help="écraser les fichiers existants")
 
@@ -72,11 +72,17 @@ def _cmd_generate(args: argparse.Namespace) -> int:
         overwrite=args.force,
     )
     n = 0
-    for record in run_batch(config):
-        n += 1
-        print(
-            f"{record['doc_id']}  {record['doc_type']:<17} {record['pages']} p.  {record['path']}"
-        )
+    try:
+        for record in run_batch(config):
+            n += 1
+            print(
+                f"{record['doc_id']}  {record['doc_type']:<17} "
+                f"{record['pages']} p.  {record['path']}"
+            )
+    except (OSError, ValueError):
+        if n:
+            print(f"échec partiel : {n} document(s) inscrit(s) au manifeste", file=sys.stderr)
+        raise
     print(f"{n} document(s) dans {args.out} ; manifeste : {args.out / MANIFEST_NAME}")
     return 0
 
@@ -87,7 +93,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.command == "list":
             return _cmd_list()
         return _cmd_generate(args)
-    except (ValueError, FileExistsError) as exc:
+    except (ValueError, OSError) as exc:
         print(f"erreur : {exc}", file=sys.stderr)
         return 2
 

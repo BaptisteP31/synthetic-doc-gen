@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import json
+import os
+import platform
+import tempfile
 from collections.abc import Iterator, Sequence
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from synthetic_doc_gen import SYNTHETIC_MARKER, __version__
@@ -71,6 +75,8 @@ def _manifest_record(
         "doc_type": document.doc_type,
         "medium": medium,
         "profile": profile.name,
+        "profile_parameters": json.loads(json.dumps(asdict(profile))),
+        "python_version": platform.python_version(),
         "base_seed": base_seed,
         "seed": seed,
         "path": path.as_posix(),
@@ -87,6 +93,17 @@ def _manifest_record(
 
 
 def run_batch(config: BatchConfig) -> Iterator[dict]:
+    """Empêche deux générations simultanées dans un même dossier."""
+    config.out_dir.mkdir(parents=True, exist_ok=True)
+    with (config.out_dir / ".synthetic-doc-gen.lock").open("a") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise FileExistsError("une génération est déjà en cours dans ce dossier") from None
+        yield from _run_batch(config)
+
+
+def _run_batch(config: BatchConfig) -> Iterator[dict]:
     """Génère le lot et rend chaque enregistrement du manifeste au fur et à mesure.
 
     Refuse d'écraser des fichiers existants sauf ``overwrite``, avant toute écriture.
@@ -112,31 +129,69 @@ def run_batch(config: BatchConfig) -> Iterator[dict]:
         config.out_dir / _relative_path(config.medium, doc_id_for(i), t, renderer.extension)
         for i, t in plan
     ]
+
+    def present(path: Path) -> bool:
+        return os.path.lexists(path)
+
     if not config.overwrite:
-        existing = [p for p in (manifest_path, *targets) if p.exists()]
+        existing = [p for p in (manifest_path, *targets) if present(p)]
         if existing:
             raise FileExistsError(
                 f"{len(existing)} fichier(s) existent déjà (ex. {existing[0]}) ; "
                 "utiliser --force pour écraser"
             )
+    elif present(manifest_path):
+        # Ne jamais supprimer des fichiers à partir d'un manifeste non fiable.
+        try:
+            old_records = [
+                json.loads(line) for line in manifest_path.read_text(encoding="utf-8").splitlines()
+            ]
+            old_paths = {record["path"] for record in old_records}
+        except (ValueError, KeyError, TypeError) as exc:
+            raise ValueError("manifeste existant invalide ; choisir un autre dossier") from exc
+        new_paths = {target.relative_to(config.out_dir).as_posix() for target in targets}
+        if not old_paths <= new_paths:
+            raise ValueError(
+                "--force laisserait des fichiers de l'ancien manifeste sans référence ; "
+                "choisir un autre dossier"
+            )
 
     (config.out_dir / config.medium).mkdir(parents=True, exist_ok=True)
-    with manifest_path.open("w", encoding="utf-8", newline="\n") as manifest:
-        for (index, doc_type), target in zip(plan, targets, strict=True):
-            document, seed = build_document(index, config.base_seed, doc_type, config.profile)
-            rendered = renderer.render(document, config.profile, doc_id_for(index))
-            target.write_bytes(rendered.data)
-            record = _manifest_record(
-                index=index,
-                base_seed=config.base_seed,
-                seed=seed,
-                document=document,
-                profile=config.profile,
-                medium=config.medium,
-                path=target.relative_to(config.out_dir),
-                rendered=rendered,
-                renderer=renderer,
-            )
-            manifest.write(json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n")
-            manifest.flush()
-            yield record
+
+    def publish(path: Path, data: bytes, *, replace: bool) -> None:
+        # Le fichier temporaire est dans le même dossier pour garantir l'atomicité.
+        fd, name = tempfile.mkstemp(prefix=".synthetic-doc-gen-", dir=path.parent)
+        try:
+            with os.fdopen(fd, "wb") as stream:
+                stream.write(data)
+            if replace:
+                os.replace(name, path)
+            else:
+                os.link(name, path)  # création exclusive, même en cas de course
+        finally:
+            if os.path.lexists(name):
+                os.unlink(name)
+
+    # Le manifeste est réservé avant les PDF ; chaque publication est atomique.
+    publish(manifest_path, b"", replace=config.overwrite)
+    manifest_data = b""
+    for (index, doc_type), target in zip(plan, targets, strict=True):
+        document, seed = build_document(index, config.base_seed, doc_type, config.profile)
+        rendered = renderer.render(document, config.profile, doc_id_for(index))
+        record = _manifest_record(
+            index=index,
+            base_seed=config.base_seed,
+            seed=seed,
+            document=document,
+            profile=config.profile,
+            medium=config.medium,
+            path=target.relative_to(config.out_dir),
+            rendered=rendered,
+            renderer=renderer,
+        )
+        publish(target, rendered.data, replace=config.overwrite)
+        manifest_data += (json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n").encode(
+            "utf-8"
+        )
+        publish(manifest_path, manifest_data, replace=True)
+        yield record

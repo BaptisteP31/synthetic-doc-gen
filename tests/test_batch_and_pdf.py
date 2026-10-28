@@ -118,3 +118,44 @@ def test_unknown_type_is_rejected_whatever_the_count(make_config, count):
     with pytest.raises(ValueError):
         list(run_batch(config))
     assert not (config.out_dir / MANIFEST_NAME).exists()
+
+
+def test_force_refuses_to_orphan_previous_documents(make_config):
+    config = make_config(count=2, doc_types=("bilan-biologique",))
+    records = list(run_batch(config))
+    before = (config.out_dir / MANIFEST_NAME).read_bytes()
+    with pytest.raises(ValueError, match="sans référence"):
+        list(run_batch(replace(config, count=1, overwrite=True)))
+    assert (config.out_dir / MANIFEST_NAME).read_bytes() == before
+    assert all((config.out_dir / r["path"]).exists() for r in records)
+
+
+def test_broken_symlink_is_an_existing_target(make_config):
+    config = make_config(count=1)
+    target = config.out_dir / "pdf" / "SYN-000000_compte-rendu.pdf"
+    target.parent.mkdir(parents=True)
+    target.symlink_to("missing")
+    with pytest.raises(FileExistsError):
+        list(run_batch(config))
+    assert target.is_symlink()
+
+
+def test_manifest_records_full_profile_and_python(make_config):
+    import platform
+
+    profile = replace(get_profile("standard"), font_size=17)
+    (record,) = run_batch(make_config(count=1, profile=profile, doc_types=("bilan-biologique",)))
+    assert record["python_version"] == platform.python_version()
+    assert record["profile_parameters"]["font_size"] == 17
+    assert _read_manifest(make_config().out_dir)[0]["profile_parameters"]["lab_rows"] == list(
+        profile.lab_rows
+    )
+
+
+def test_concurrent_batch_is_rejected(make_config):
+    config = make_config(count=2, doc_types=("bilan-biologique",))
+    first = run_batch(config)
+    next(first)
+    with pytest.raises(FileExistsError, match="en cours"):
+        list(run_batch(make_config(count=1, overwrite=True)))
+    first.close()

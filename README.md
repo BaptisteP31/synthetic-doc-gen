@@ -35,7 +35,13 @@ uv run synthetic-doc-gen generate -o out3 -n 10 -s 42 --start-index 100
 Options de `generate` : `-o/--out` (obligatoire), `-n/--count` (10), `-s/--seed` (0),
 `-t/--types` (liste séparée par des virgules, défaut : tous), `-p/--profile` (`standard`),
 `-m/--medium` (`pdf`), `--start-index`, `--force` (écraser). Sans `--force`, la commande refuse
-d'écrire si un fichier cible ou le manifeste existe déjà, avant toute écriture.
+d'écrire si un fichier cible ou le manifeste existe déjà. Chaque lot utilise son propre dossier :
+`--start-index` ne reprend pas un manifeste existant. Avec `--force`, le remplacement est refusé
+si des fichiers de l'ancien manifeste seraient exclus du nouveau lot. Les autres fichiers ne sont
+pas supprimés. Une seule génération peut utiliser le dossier à la fois. En cas d'échec, la
+commande signale les documents déjà inscrits ; un PDF peut rester sans entrée si la mise à jour
+du manifeste échoue après son écriture. Les fichiers sont publiés individuellement et atomiquement,
+mais le lot entier n'est pas une transaction.
 
 Sortie :
 
@@ -55,7 +61,8 @@ out/
 | `compte-rendu`     | Compte rendu de consultation (5 spécialités fictives, sections cliniques) |
 | `bilan-biologique` | NFS, biochimie, inflammation ; valeurs de référence, indicateurs H/B |
 
-Les types sont répartis en tournant selon l'index du document.
+Les types sont répartis en tournant selon l'index du document et l'ordre fourni à `--types` ;
+modifier cet ordre change le type attribué à un index.
 
 ### Profils
 
@@ -79,8 +86,8 @@ ReportLab (dates et identifiants internes figés).
 
 **Garantie** : même entrées + même environnement (versions de Python et de ReportLab) ⇒ même
 fichier, octet pour octet (vérifié par les tests). **Pas de promesse d'identité binaire
-inter-plateformes ou inter-versions** : le contenu logique (texte, valeurs) est reproductible,
-pas forcément les octets du PDF. Le manifeste enregistre les versions utilisées.
+inter-plateformes ou inter-versions** : le contenu logique comme les octets peuvent changer selon les versions du logiciel ou de ses
+dépendances, de Python ou la plateforme. Le manifeste enregistre les versions utilisées.
 
 ## Manifeste JSONL
 
@@ -88,7 +95,8 @@ Une ligne JSON (clés triées) par document :
 
 ```json
 {"schema_version": 1, "doc_id": "SYN-000001", "index": 1, "doc_type": "bilan-biologique",
- "medium": "pdf", "profile": "standard", "base_seed": 42, "seed": 123…,
+ "medium": "pdf", "profile": "standard", "profile_parameters": {"name": "standard", "…": "…"},
+ "python_version": "3.11.0", "base_seed": 42, "seed": 123…,
  "path": "pdf/SYN-000001_bilan-biologique.pdf", "bytes": 4309, "sha256": "…", "pages": 1,
  "language": "fr", "synthetic": true, "marker": "DOCUMENT SYNTHÉTIQUE TEST",
  "generator": {"name": "synthetic-doc-gen", "version": "0.1.0"},

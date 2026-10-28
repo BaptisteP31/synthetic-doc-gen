@@ -62,3 +62,23 @@ def test_cli_rejects_unknown_type_with_empty_batch(tmp_path, capsys):
     assert main(["generate", "-o", str(out), "-n", "0", "-t", "inconnu"]) == 2
     assert "type de document inconnu" in capsys.readouterr().err
     assert not (out / "manifest.jsonl").exists()
+
+
+def test_cli_reports_partial_failure_without_traceback(tmp_path, capsys, monkeypatch):
+    from synthetic_doc_gen import batch
+
+    original = batch.build_document
+
+    def fail_second(index, *args):
+        if index == 1:
+            raise OSError("disque plein")
+        return original(index, *args)
+
+    monkeypatch.setattr(batch, "build_document", fail_second)
+    out = tmp_path / "out"
+    assert main(["generate", "-o", str(out), "-n", "2", "-t", "bilan-biologique"]) == 2
+    error = capsys.readouterr().err
+    assert "échec partiel" in error and "disque plein" in error
+    assert "Traceback" not in error
+    records = [json.loads(line) for line in (out / "manifest.jsonl").read_text().splitlines()]
+    assert len(records) == 1 and (out / records[0]["path"]).is_file()
