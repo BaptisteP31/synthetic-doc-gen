@@ -131,31 +131,28 @@ def calibrate(
         )
         needed = 1.0
 
-    rendered_scans = [render_native(item) for item in scans]
-    sample = spread(rendered_scans, SAMPLE_SCANS)
-    pool = [
-        (doc, page)
-        for doc, rendered in enumerate(sample)
-        for page in range(
-            rendered.pages if rendered.pages is not None else scan.page_count(rendered.data)
-        )
-    ]
+    sample_indices = set(spread(range(len(scans)), SAMPLE_SCANS))
+    sample = []
+    total_pages = 0
+    for index, item in enumerate(scans):
+        rendered = render_native(item)
+        count = rendered.pages if rendered.pages is not None else scan.page_count(rendered.data)
+        total_pages += count
+        if index in sample_indices:
+            sample.append((rendered, count))
+    pool = [(doc, page) for doc, (_, count) in enumerate(sample) for page in range(count)]
     pool = spread(pool, SAMPLE_PAGES)
-    pages_per_scan = sum(
-        rendered.pages if rendered.pages is not None else scan.page_count(rendered.data)
-        for rendered in rendered_scans
-    ) / len(rendered_scans)
+    pages_per_scan = total_pages / len(scans)
 
     def estimate(settings: ScanSettings) -> float:
         sizes: list[int] = []
         for doc in sorted({d for d, _ in pool}):
             pages = [p for d, p in pool if d == doc]
-            for width, height, raster in scan.iter_rasters(sample[doc].data, settings.dpi, pages):
+            for width, height, raster in scan.iter_rasters(
+                sample[doc][0].data, settings.dpi, pages
+            ):
                 sizes.append(scan.encoded_size(scan.encode_page(width, height, raster, settings)))
-        return (
-            sum(sizes) / len(sizes) * pages_per_scan * (1 if settings.color == "bw" else 1.25)
-            + 2000
-        )
+        return sum(sizes) / len(sizes) * pages_per_scan + 2000
 
     free_dpi = dpi is None
     free_quality = quality is None and color != "bw"
@@ -184,14 +181,22 @@ def calibrate(
     if not tuned:
         size = estimate(settings)
         warnings.append(
-            "dpi et qualité JPEG imposés : la taille cible n'est pas ajustée (mesure seule)"
+            "dpi imposé : la taille cible n'est pas ajustée (mesure seule)"
+            if color == "bw"
+            else "dpi et qualité JPEG imposés : la taille cible n'est pas ajustée (mesure seule)"
         )
     elif status != "ok":
-        warnings.append(
-            f"taille cible hors de portée des réglages réalistes (dpi {TUNING_DPI[0]}-"
-            f"{TUNING_DPI[1]}, qualité JPEG {TUNING_QUALITY[0]}-{TUNING_QUALITY[1]}) : scans "
-            f"réglés à {settings.dpi} dpi, qualité {settings.jpeg_quality}"
-        )
+        if color == "bw":
+            warnings.append(
+                f"taille cible hors de portée des réglages réalistes (dpi {TUNING_DPI[0]}-"
+                f"{TUNING_DPI[1]}) : scans réglés à {settings.dpi} dpi"
+            )
+        else:
+            warnings.append(
+                f"taille cible hors de portée des réglages réalistes (dpi {TUNING_DPI[0]}-"
+                f"{TUNING_DPI[1]}, qualité JPEG {TUNING_QUALITY[0]}-{TUNING_QUALITY[1]}) : scans "
+                f"réglés à {settings.dpi} dpi, qualité {settings.jpeg_quality}"
+            )
     return Calibration(
         settings,
         tuple(tuned),

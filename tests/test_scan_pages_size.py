@@ -542,7 +542,7 @@ def test_calibration_uses_all_scan_page_counts(monkeypatch):
         plan, target_mean_bytes=10000, color="color", dpi=100, quality=75, render_native=native
     )
     assert rendered == list(range(7))
-    assert result.estimated_scan_bytes == pytest.approx(2000 + 125 * 15 / 7)
+    assert result.estimated_scan_bytes == pytest.approx(2000 + 100 * 15 / 7)
 
 
 def test_pagination_checks_limit_before_giving_up():
@@ -562,3 +562,55 @@ def test_pillow_is_direct_dependency():
 
     project = tomllib.loads(Path("pyproject.toml").read_text())
     assert any(dep.lower().startswith("pillow") for dep in project["project"]["dependencies"])
+
+
+@pytest.mark.parametrize("color", ["color", "gray", "bw"])
+def test_scan_stream_structure_and_rendering(color):
+    import io
+
+    import pypdfium2
+    from PIL import Image
+    from reportlab import rl_config
+
+    from synthetic_doc_gen.renderers import scan
+
+    raster = Image.new("RGB", (80, 60), "white")
+    for x in range(20, 60):
+        for y in range(15, 45):
+            raster.putpixel((x, y), (0, 0, 0))
+    encoded = scan.encode_page(80, 60, raster, ScanSettings(color=color))
+    previous = rl_config.useA85
+    pdf = scan.assemble([encoded], title="test", subject="", keywords="", creator="test")
+    assert rl_config.useA85 == previous
+    page = PdfReader(io.BytesIO(pdf)).pages[0]
+    image = next(iter(page["/Resources"]["/XObject"].values())).get_object()
+    if color == "bw":
+        assert list(image["/Filter"]) == ["/FlateDecode"]
+        assert image["/BitsPerComponent"] == 1
+    else:
+        assert list(image["/Filter"]) == ["/DCTDecode"]
+        assert image._data == encoded.jpeg
+    document = pypdfium2.PdfDocument(pdf)
+    try:
+        rendered = document[0].render().to_pil().convert("RGB")
+        assert max(rendered.getpixel((40, 30))) < 30
+        assert min(rendered.getpixel((5, 5))) > 225
+    finally:
+        document.close()
+
+
+def test_bw_calibration_warnings_do_not_mention_jpeg(make_config, tmp_path):
+    for dpi in (None, 100):
+        config = make_config(
+            out_dir=tmp_path / str(dpi),
+            count=1,
+            scan_ratio=1,
+            scan_color="bw",
+            scan_dpi=dpi,
+            target_mean_bytes=30000000,
+        )
+        _, report = _run(config)
+        assert any("dpi" in warning for warning in report.warnings)
+        assert all(
+            "qualité" not in warning and "JPEG" not in warning for warning in report.warnings
+        )

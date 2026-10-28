@@ -107,8 +107,11 @@ def assemble(
         source = io.BytesIO(page.jpeg) if page.jpeg is not None else page.image
         info = {"imgObj": None}
         canvas.drawImage(ImageReader(source), 0, 0, page.width_pt, page.height_pt, extraReturn=info)
-        if page.image is not None:
-            obj = info["imgObj"]
+        obj = info["imgObj"]
+        if page.jpeg is not None:
+            obj.streamContent = page.jpeg
+            obj._filters = ("DCTDecode",)
+        else:
             obj.bitsPerComponent = 1
             obj.colorSpace = "DeviceGray"
             obj.streamContent = zlib.compress(page.image.tobytes())

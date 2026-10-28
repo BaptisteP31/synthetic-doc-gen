@@ -94,7 +94,11 @@ poids d'un PDF natif vient de son contenu (≈ 3-5 ko par page) ; seul celui des
 par la résolution puis, en butée, la qualité JPEG, dans des plages réalistes (100-400 dpi,
 qualité 40-95). Le réglage est calculé avant toute écriture, sur un échantillon de pages
 réellement rendues et le nombre réel de pages de tous les scans, en déduisant la contribution
-mesurée des natifs ; les réglages imposés
+mesurée sur au plus huit natifs. L’estimation multiplie la taille moyenne des flux image
+de dix pages au plus (réparties sur six scans au plus) par le nombre moyen réel de pages,
+puis ajoute 2 000 octets de structure PDF par document. Cette approximation peut varier avec
+le contenu et le nombre de pages ; le rapport donne la mesure effective. Les PDF utilisés pour
+compter les pages sont libérés au fur et à mesure, sauf ceux de l’échantillon. Les réglages imposés
 (`--scan-dpi`, `--scan-quality`) ne sont jamais modifiés. La moyenne **réelle** est ensuite
 mesurée sur les fichiers écrits (`report.json`, résumé en fin de commande) ; si elle s'écarte de
 la cible au-delà de la tolérance, ou si la cible est hors de portée (aucun scan, réglages
