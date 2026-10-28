@@ -36,12 +36,13 @@ Options de `generate` : `-o/--out` (obligatoire), `-n/--count` (10), `-s/--seed`
 `-t/--types` (liste séparée par des virgules, défaut : tous), `-p/--profile` (`standard`),
 `-m/--medium` (`pdf`), `--start-index`, `--force` (écraser). Sans `--force`, la commande refuse
 d'écrire si un fichier cible ou le manifeste existe déjà. Chaque lot utilise son propre dossier :
-`--start-index` ne reprend pas un manifeste existant. Avec `--force`, le remplacement est refusé
-si des fichiers de l'ancien manifeste seraient exclus du nouveau lot. Les autres fichiers ne sont
-pas supprimés. Une seule génération peut utiliser le dossier à la fois. En cas d'échec, la
-commande signale les documents déjà inscrits ; un PDF peut rester sans entrée si la mise à jour
-du manifeste échoue après son écriture. Les fichiers sont publiés individuellement et atomiquement,
-mais le lot entier n'est pas une transaction.
+`--start-index` ne reprend pas un manifeste existant. Avec `--force`, les fichiers cibles
+peuvent être remplacés seulement en l'absence de manifeste ; pour préserver un lot existant,
+choisir un autre dossier. Les autres fichiers ne sont pas supprimés. Une seule génération peut
+utiliser le dossier à la fois. Le manifeste est complété ligne par ligne ; les documents déjà
+inscrits restent disponibles en cas d'échec. Une interruption brutale entre la publication d'un
+PDF et l'ajout de sa ligne peut laisser un PDF sans référence, ou une ligne partielle. Le lot
+entier n'est pas une transaction ; inspecter le dossier avant de reprendre après une interruption.
 
 Sortie :
 

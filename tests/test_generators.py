@@ -148,3 +148,23 @@ def test_lab_report_flags_pediatric_reference_values():
         age < 18: "mineur" in _text(doc) for doc, _unused, age in _reports(200, "bilan-biologique")
     }
     assert notes == {True: True, False: False}
+
+
+def test_clinical_service_wording_and_neutral_conclusion():
+    endocrinology_seen = False
+    for doc, _kv, _age in _reports(400):
+        text = _text(doc)
+        assert "Évaluation clinique à poursuivre selon le motif de consultation." in text
+        if doc.entities["service"] == "Endocrinologie":
+            endocrinology_seen = True
+            assert "consultation d'endocrinologie" in text
+    assert endocrinology_seen
+
+
+def test_minor_lab_label_agrees_with_sex():
+    seen = set()
+    for doc, kv, age in _reports(400, "bilan-biologique"):
+        if age < 18:
+            seen.add(kv["Sexe"])
+            assert ("Patiente mineure" if kv["Sexe"] == "F" else "Patient mineur") in _text(doc)
+    assert seen == {"F", "M"}

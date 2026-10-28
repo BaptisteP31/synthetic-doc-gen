@@ -7,7 +7,7 @@ import hashlib
 import json
 import os
 import platform
-import tempfile
+import secrets
 from collections.abc import Iterator, Sequence
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -141,57 +141,59 @@ def _run_batch(config: BatchConfig) -> Iterator[dict]:
                 "utiliser --force pour écraser"
             )
     elif present(manifest_path):
-        # Ne jamais supprimer des fichiers à partir d'un manifeste non fiable.
-        try:
-            old_records = [
-                json.loads(line) for line in manifest_path.read_text(encoding="utf-8").splitlines()
-            ]
-            old_paths = {record["path"] for record in old_records}
-        except (ValueError, KeyError, TypeError) as exc:
-            raise ValueError("manifeste existant invalide ; choisir un autre dossier") from exc
-        new_paths = {target.relative_to(config.out_dir).as_posix() for target in targets}
-        if not old_paths <= new_paths:
-            raise ValueError(
-                "--force laisserait des fichiers de l'ancien manifeste sans référence ; "
-                "choisir un autre dossier"
-            )
+        raise ValueError("--force ne remplace pas un manifeste existant ; choisir un autre dossier")
 
-    (config.out_dir / config.medium).mkdir(parents=True, exist_ok=True)
+    medium_dir = config.out_dir / config.medium
+    if medium_dir.is_symlink():
+        raise ValueError("le dossier du support ne doit pas être un lien symbolique")
+    medium_dir.mkdir(parents=True, exist_ok=True)
 
     def publish(path: Path, data: bytes, *, replace: bool) -> None:
-        # Le fichier temporaire est dans le même dossier pour garantir l'atomicité.
-        fd, name = tempfile.mkstemp(prefix=".synthetic-doc-gen-", dir=path.parent)
+        while True:
+            temp = path.parent / f".synthetic-doc-gen-{secrets.token_hex(16)}"
+            try:
+                fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o666)
+                break
+            except FileExistsError:
+                continue
         try:
             with os.fdopen(fd, "wb") as stream:
                 stream.write(data)
             if replace:
-                os.replace(name, path)
+                os.replace(temp, path)
             else:
-                os.link(name, path)  # création exclusive, même en cas de course
+                os.link(temp, path)
         finally:
-            if os.path.lexists(name):
-                os.unlink(name)
+            temp.unlink(missing_ok=True)
 
-    # Le manifeste est réservé avant les PDF ; chaque publication est atomique.
-    publish(manifest_path, b"", replace=config.overwrite)
-    manifest_data = b""
-    for (index, doc_type), target in zip(plan, targets, strict=True):
-        document, seed = build_document(index, config.base_seed, doc_type, config.profile)
-        rendered = renderer.render(document, config.profile, doc_id_for(index))
-        record = _manifest_record(
-            index=index,
-            base_seed=config.base_seed,
-            seed=seed,
-            document=document,
-            profile=config.profile,
-            medium=config.medium,
-            path=target.relative_to(config.out_dir),
-            rendered=rendered,
-            renderer=renderer,
-        )
-        publish(target, rendered.data, replace=config.overwrite)
-        manifest_data += (json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n").encode(
-            "utf-8"
-        )
-        publish(manifest_path, manifest_data, replace=True)
-        yield record
+    publish(manifest_path, b"", replace=False)
+    manifest = manifest_path.open("r+b", buffering=0)
+    try:
+        for (index, doc_type), target in zip(plan, targets, strict=True):
+            document, seed = build_document(index, config.base_seed, doc_type, config.profile)
+            rendered = renderer.render(document, config.profile, doc_id_for(index))
+            record = _manifest_record(
+                index=index,
+                base_seed=config.base_seed,
+                seed=seed,
+                document=document,
+                profile=config.profile,
+                medium=config.medium,
+                path=target.relative_to(config.out_dir),
+                rendered=rendered,
+                renderer=renderer,
+            )
+            line = (json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n").encode("utf-8")
+            publish(target, rendered.data, replace=config.overwrite)
+            position = manifest.tell()
+            try:
+                written = manifest.write(line)
+                if written != len(line):
+                    raise OSError("écriture incomplète du manifeste")
+            except BaseException:
+                manifest.truncate(position)
+                target.unlink(missing_ok=True)
+                raise
+            yield record
+    finally:
+        manifest.close()

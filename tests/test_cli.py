@@ -37,7 +37,7 @@ def test_cli_reports_existing_files_with_exit_code_2(tmp_path, capsys):
     capsys.readouterr()
     assert main(["generate", "-o", str(out), "-n", "1"]) == 2
     assert "existent déjà" in capsys.readouterr().err
-    assert main(["generate", "-o", str(out), "-n", "1", "--force"]) == 0
+    assert main(["generate", "-o", str(out), "-n", "1", "--force"]) == 2
 
 
 def test_cli_rejects_unknown_type(tmp_path, capsys):

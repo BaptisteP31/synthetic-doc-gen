@@ -162,9 +162,12 @@ def generate_lab_report(rng: random.Random, profile: Profile) -> Document:
         )
     )
     if age < ADULT_AGE:
+        minor_label = "Patiente mineure" if person.sex == "F" else "Patient mineur"
         blocks.append(
             Paragraph(
-                "Patient mineur : valeurs de référence adultes données à titre indicatif, "
+                f"{minor_label} : "
+                "valeurs de référence adultes "
+                "données à titre indicatif, "
                 "à interpréter selon les normes pédiatriques."
             )
         )

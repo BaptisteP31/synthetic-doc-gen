@@ -40,7 +40,9 @@ def _build_parser() -> argparse.ArgumentParser:
         default=0,
         help="index du premier document (utiliser un dossier séparé pour chaque lot)",
     )
-    gen.add_argument("--force", action="store_true", help="écraser les fichiers existants")
+    gen.add_argument(
+        "--force", action="store_true", help="écraser les fichiers cibles sans manifeste existant"
+    )
 
     sub.add_parser("list", help="lister types, profils et médias disponibles")
     return parser

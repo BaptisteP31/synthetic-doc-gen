@@ -87,7 +87,8 @@ def test_refuses_to_overwrite_unless_forced(make_config):
         list(run_batch(config))
     assert marker.read_bytes() == b"keep"
     forced = make_config(count=2, overwrite=True)
-    assert len(list(run_batch(forced))) == 2
+    with pytest.raises(ValueError, match="manifeste existant"):
+        list(run_batch(forced))
     assert marker.read_bytes() == b"keep"
 
 
@@ -124,7 +125,7 @@ def test_force_refuses_to_orphan_previous_documents(make_config):
     config = make_config(count=2, doc_types=("bilan-biologique",))
     records = list(run_batch(config))
     before = (config.out_dir / MANIFEST_NAME).read_bytes()
-    with pytest.raises(ValueError, match="sans référence"):
+    with pytest.raises(ValueError, match="manifeste existant"):
         list(run_batch(replace(config, count=1, overwrite=True)))
     assert (config.out_dir / MANIFEST_NAME).read_bytes() == before
     assert all((config.out_dir / r["path"]).exists() for r in records)
@@ -159,3 +160,77 @@ def test_concurrent_batch_is_rejected(make_config):
     with pytest.raises(FileExistsError, match="en cours"):
         list(run_batch(make_config(count=1, overwrite=True)))
     first.close()
+
+
+def test_permissions_follow_umask(make_config):
+    import os
+
+    previous = os.umask(0o027)
+    try:
+        config = make_config(count=1)
+        (record,) = run_batch(config)
+    finally:
+        os.umask(previous)
+    assert (config.out_dir / MANIFEST_NAME).stat().st_mode & 0o777 == 0o640
+    assert (config.out_dir / record["path"]).stat().st_mode & 0o777 == 0o640
+
+
+def test_medium_symlink_rejected(make_config, tmp_path):
+    config = make_config(count=1, overwrite=True)
+    config.out_dir.mkdir()
+    external = tmp_path / "external"
+    external.mkdir()
+    (config.out_dir / "pdf").symlink_to(external, target_is_directory=True)
+    with pytest.raises(ValueError, match="lien symbolique"):
+        list(run_batch(config))
+    assert not list(external.iterdir())
+    assert not (config.out_dir / MANIFEST_NAME).exists()
+
+
+def test_render_failure_preserves_completed_records(make_config, monkeypatch):
+    from synthetic_doc_gen import batch
+
+    config = make_config(count=2)
+    original = batch.build_document
+
+    def fail_second(index, *args):
+        if index == 1:
+            raise OSError("panne")
+        return original(index, *args)
+
+    monkeypatch.setattr(batch, "build_document", fail_second)
+    with pytest.raises(OSError, match="panne"):
+        list(run_batch(config))
+    (record,) = _read_manifest(config.out_dir)
+    data = (config.out_dir / record["path"]).read_bytes()
+    assert hashlib.sha256(data).hexdigest() == record["sha256"]
+
+
+def test_partial_manifest_write_is_rolled_back(make_config, monkeypatch):
+    from pathlib import Path
+
+    original_open = Path.open
+
+    class FailingStream:
+        def __init__(self, stream):
+            self.stream = stream
+
+        def __getattr__(self, name):
+            return getattr(self.stream, name)
+
+        def write(self, data):
+            self.stream.write(data[:10])
+            raise OSError("panne manifeste")
+
+    def failing_open(path, *args, **kwargs):
+        stream = original_open(path, *args, **kwargs)
+        if path.name == MANIFEST_NAME and args and args[0] == "r+b":
+            return FailingStream(stream)
+        return stream
+
+    monkeypatch.setattr(Path, "open", failing_open)
+    config = make_config(count=1)
+    with pytest.raises(OSError, match="panne manifeste"):
+        list(run_batch(config))
+    assert (config.out_dir / MANIFEST_NAME).read_bytes() == b""
+    assert not list((config.out_dir / "pdf").glob("*.pdf"))

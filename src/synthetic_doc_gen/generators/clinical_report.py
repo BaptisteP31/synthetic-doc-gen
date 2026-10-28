@@ -213,10 +213,12 @@ def generate_clinical_report(rng: random.Random, profile: Profile) -> Document:
     antecedent = choose(rng, spec.antecedents, person, age)
     vitals = vitals_text(rng, age)
     exam = choose(rng, spec.exams, person, age)
-    conclusion = choose(rng, spec.conclusions, person, age)
+    conclusion = "évaluation clinique à poursuivre selon le motif de consultation"
     is_minor = age < ADULT_AGE
     subject = person.patient_ref(age, capitalize=True) if is_minor else person.civility
     escort = " Un parent l'accompagne." if is_minor else ""
+
+    service_prefix = "d'" if spec.service == "Endocrinologie" else "de "
 
     blocks: list = [
         KeyValues(
@@ -235,7 +237,7 @@ def generate_clinical_report(rng: random.Random, profile: Profile) -> Document:
         Heading("Motif de consultation"),
         Paragraph(
             f"{subject} {person.last_name.upper()}, {age} ans, est "
-            f"{person.agree('reçu')} en consultation de "
+            f"{person.agree('reçu')} en consultation {service_prefix}"
             f"{spec.service.lower()} pour {motif}.{escort}"
         ),
         Heading("Antécédents"),
