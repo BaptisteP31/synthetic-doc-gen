@@ -1,0 +1,168 @@
+"""Bilan biologique fictif : tableaux d'analyses avec valeurs de référence et indicateurs."""
+
+from __future__ import annotations
+
+import random
+from dataclasses import dataclass
+
+from synthetic_doc_gen.fictional import (
+    FACILITIES,
+    document_date,
+    fmt_date,
+    make_person,
+    make_practitioner,
+)
+from synthetic_doc_gen.model import Document, Heading, KeyValues, Paragraph, Table
+from synthetic_doc_gen.profiles import Profile
+
+P_ABNORMAL = 0.25
+
+
+@dataclass(frozen=True)
+class Analyte:
+    panel: str
+    name: str
+    unit: str
+    low: float
+    high: float
+    decimals: int
+
+
+# Valeurs de référence génériques, de démonstration uniquement.
+CATALOG: tuple[Analyte, ...] = (
+    Analyte("Hématologie (NFS)", "Hémoglobine", "g/dL", 12.0, 17.0, 1),
+    Analyte("Hématologie (NFS)", "Hématies", "T/L", 4.0, 5.8, 2),
+    Analyte("Hématologie (NFS)", "Hématocrite", "%", 37.0, 51.0, 1),
+    Analyte("Hématologie (NFS)", "VGM", "fL", 80.0, 100.0, 1),
+    Analyte("Hématologie (NFS)", "Leucocytes", "G/L", 4.0, 10.0, 2),
+    Analyte("Hématologie (NFS)", "Polynucléaires neutrophiles", "G/L", 1.8, 7.5, 2),
+    Analyte("Hématologie (NFS)", "Lymphocytes", "G/L", 1.0, 4.0, 2),
+    Analyte("Hématologie (NFS)", "Plaquettes", "G/L", 150.0, 400.0, 0),
+    Analyte("Biochimie", "Glycémie à jeun", "g/L", 0.70, 1.10, 2),
+    Analyte("Biochimie", "Créatinine", "µmol/L", 45.0, 105.0, 0),
+    Analyte("Biochimie", "Urée", "mmol/L", 2.5, 8.0, 1),
+    Analyte("Biochimie", "Sodium", "mmol/L", 136.0, 145.0, 0),
+    Analyte("Biochimie", "Potassium", "mmol/L", 3.5, 5.1, 1),
+    Analyte("Biochimie", "Calcium", "mmol/L", 2.15, 2.55, 2),
+    Analyte("Biochimie", "Cholestérol total", "g/L", 1.20, 2.00, 2),
+    Analyte("Biochimie", "Triglycérides", "g/L", 0.40, 1.50, 2),
+    Analyte("Biochimie", "ASAT", "UI/L", 10.0, 40.0, 0),
+    Analyte("Biochimie", "ALAT", "UI/L", 7.0, 45.0, 0),
+    Analyte("Inflammation", "CRP", "mg/L", 0.0, 5.0, 1),
+    Analyte("Inflammation", "Ferritine", "µg/L", 30.0, 300.0, 0),
+    Analyte("Inflammation", "Vitesse de sédimentation (1 h)", "mm", 2.0, 20.0, 0),
+)
+
+
+def _fmt(value: float, decimals: int) -> str:
+    return f"{value:.{decimals}f}".replace(".", ",")
+
+
+def draw_result(rng: random.Random, analyte: Analyte) -> float:
+    span = analyte.high - analyte.low
+    if rng.random() < P_ABNORMAL:
+        excess = span * (0.05 + rng.random() * 0.45)
+        value = analyte.high + excess if rng.random() < 0.5 else analyte.low - excess
+    else:
+        value = analyte.low + rng.random() * span
+    return max(0.0, value)
+
+
+def flag_for(analyte: Analyte, shown_value: float) -> str:
+    if shown_value > analyte.high:
+        return "H"
+    if shown_value < analyte.low:
+        return "B"
+    return ""
+
+
+def generate_lab_report(rng: random.Random, profile: Profile) -> Document:
+    person = make_person(rng)
+    prescriber = make_practitioner(rng)
+    biologist = make_practitioner(rng)
+    facility = rng.choice([f for f in FACILITIES if "Laboratoire" in f or "Centre" in f])
+    day = document_date(rng)
+    sample_id = f"SYN-ECH-{rng.randrange(10**8):08d}"
+
+    n_rows = rng.randint(*profile.lab_rows)
+    picked = sorted(rng.sample(range(len(CATALOG)), min(n_rows, len(CATALOG))))
+    blocks: list = [
+        KeyValues(
+            (
+                ("Patient", person.full_name),
+                ("Date de naissance", fmt_date(person.birth_date)),
+                ("Sexe", person.sex),
+                ("Identifiant patient", person.patient_id),
+                ("N° d'échantillon", sample_id),
+                ("Date de prélèvement", fmt_date(day)),
+                ("Prescripteur", prescriber),
+            )
+        )
+    ]
+
+    n_abnormal = 0
+    current_panel = None
+    rows: list[tuple[str, ...]] = []
+    emphasized: set[int] = set()
+
+    def flush() -> None:
+        nonlocal rows, emphasized
+        if rows:
+            blocks.append(
+                Table(
+                    ("Analyse", "Résultat", "Unité", "Valeurs de référence", "Ind."),
+                    tuple(rows),
+                    col_weights=(4.0, 1.5, 1.4, 2.4, 0.8),
+                    emphasized_rows=frozenset(emphasized),
+                )
+            )
+        rows, emphasized = [], set()
+
+    for idx in picked:
+        analyte = CATALOG[idx]
+        if analyte.panel != current_panel:
+            flush()
+            blocks.append(Heading(analyte.panel, level=2))
+            current_panel = analyte.panel
+        # Le drapeau est calculé sur la valeur arrondie, telle qu'affichée.
+        shown = round(draw_result(rng, analyte), analyte.decimals)
+        flag = flag_for(analyte, shown)
+        if flag:
+            n_abnormal += 1
+            emphasized.add(len(rows))
+        rows.append(
+            (
+                analyte.name,
+                _fmt(shown, analyte.decimals),
+                analyte.unit,
+                f"{_fmt(analyte.low, analyte.decimals)} - {_fmt(analyte.high, analyte.decimals)}",
+                flag,
+            )
+        )
+    flush()
+
+    blocks.append(Paragraph("Ind. : H = supérieur à la valeur de référence, B = inférieur."))
+    blocks.append(
+        Paragraph(
+            "Valeurs de référence génériques de démonstration. Ce bilan est entièrement fictif "
+            "et ne doit servir à aucune interprétation clinique."
+        )
+    )
+    blocks.append(Paragraph(f"Validé par {biologist} (biologiste fictif)."))
+
+    return Document(
+        doc_type="bilan-biologique",
+        title="Compte rendu d'analyses biologiques",
+        issuer=facility,
+        blocks=tuple(blocks),
+        entities={
+            "patient_name": person.full_name,
+            "birth_date": fmt_date(person.birth_date),
+            "patient_id": person.patient_id,
+            "sample_id": sample_id,
+            "document_date": fmt_date(day),
+            "prescriber": prescriber,
+            "n_results": str(len(picked)),
+            "n_abnormal": str(n_abnormal),
+        },
+    )
