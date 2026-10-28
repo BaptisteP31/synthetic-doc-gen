@@ -80,3 +80,36 @@ def test_parallel_worker_error_preserves_prefix(make_config, tmp_path, monkeypat
     assert [row["index"] for row in rows] == [0]
     assert len(list((out / "pdf").glob("*.pdf"))) == 1
     assert not (out / "report.json").exists()
+
+
+def test_parallel_total_defers_fit_error_beyond_required_prefix(make_config, tmp_path):
+    args = {
+        "total_size": 1,
+        "max_count": 2,
+        "pages": (1, 1),
+        "doc_types": ("compte-rendu", "compte-rendu-imagerie"),
+    }
+    one = list(run_batch(make_config(out_dir=tmp_path / "one", **args)))
+    many = list(run_batch(make_config(out_dir=tmp_path / "many", jobs=2, **args)))
+    assert many == one
+    assert len(many) == 1
+    assert json.loads((tmp_path / "many" / "report.json").read_text())["total_target"]["reached"]
+
+
+@pytest.mark.parametrize("jobs", [1, 2])
+def test_total_fit_error_preserves_published_prefix(make_config, tmp_path, jobs):
+    out = tmp_path / str(jobs)
+    config = make_config(
+        out_dir=out,
+        total_size=10**9,
+        max_count=2,
+        pages=(1, 1),
+        doc_types=("compte-rendu", "compte-rendu-imagerie"),
+        jobs=jobs,
+    )
+    with pytest.raises(ValueError):
+        list(run_batch(config))
+    rows = [json.loads(line) for line in (out / "manifest.jsonl").read_text().splitlines()]
+    assert [row["index"] for row in rows] == [0]
+    assert len(list((out / "pdf").glob("*.pdf"))) == 1
+    assert not (out / "report.json").exists()

@@ -769,12 +769,21 @@ def _run_batch(config: BatchConfig) -> Iterator[dict]:
             )
             pending = deque()
             source = iter(documents())
+            source_exhausted = False
             try:
 
                 def submit_one():
+                    nonlocal source_exhausted
+                    if source_exhausted:
+                        return False
                     try:
                         item, target = next(source)
                     except StopIteration:
+                        source_exhausted = True
+                        return False
+                    except Exception as error:
+                        source_exhausted = True
+                        pending.append(error)
                         return False
                     options = scan_options if item.scan else native_options
                     pending.append(
@@ -791,7 +800,10 @@ def _run_batch(config: BatchConfig) -> Iterator[dict]:
                     if not submit_one():
                         break
                 while pending:
-                    item, target, options, future = pending.popleft()
+                    entry = pending.popleft()
+                    if isinstance(entry, Exception):
+                        raise entry
+                    item, target, options, future = entry
                     document, seed, rendered = future.result()
                     yield item, target, options, document, seed, rendered
                     submit_one()
