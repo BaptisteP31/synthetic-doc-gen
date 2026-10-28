@@ -16,12 +16,18 @@ from fractions import Fraction
 from importlib import metadata
 from pathlib import Path
 
+import PIL
+from PIL import features
+
 from synthetic_doc_gen import SYNTHETIC_MARKER, __version__
-from synthetic_doc_gen.generators import get_generator
+from synthetic_doc_gen.generators import IMAGE_DOC_TYPES, get_generator
 from synthetic_doc_gen.model import Document
 from synthetic_doc_gen.options import (
+    DEFAULT_IMAGE_DPI,
+    DEFAULT_IMAGE_QUALITY,
     DEFAULT_JPEG_QUALITY,
     DEFAULT_SCAN_DPI,
+    ImageSettings,
     RenderOptions,
     ScanSettings,
 )
@@ -29,7 +35,7 @@ from synthetic_doc_gen.pagination import MAX_PAGES, fit_pages
 from synthetic_doc_gen.profiles import Profile
 from synthetic_doc_gen.renderers import Rendered, get_renderer, scan
 from synthetic_doc_gen.seeding import derive_seed, make_rng
-from synthetic_doc_gen.sizing import Calibration, calibrate
+from synthetic_doc_gen.sizing import Calibration, ImageTuning, calibrate
 
 MANIFEST_NAME = "manifest.jsonl"
 REPORT_NAME = "report.json"
@@ -54,6 +60,10 @@ class BatchConfig:
     scan_dpi: int | None = None
     scan_color: str = "color"
     scan_quality: int | None = None
+    #: Réglages des images synthétiques (types d'imagerie) ; ``None`` : défaut, ou ajustés.
+    image_dpi: int | None = None
+    image_quality: int | None = None
+    image_format: str = "jpeg"
     #: Logo et signature fictifs (vectoriels, déterministes).
     logo: bool = False
     signature: bool = False
@@ -127,6 +137,11 @@ def is_scan(index: int, doc_types: Sequence[str], ratio: float) -> bool:
     return math.floor((rank + 1) * share + offset) > math.floor(rank * share + offset)
 
 
+def _imaged(item: PlannedDocument) -> bool:
+    """Natif dont les images se règlent (les scans se règlent par leur propre rasterisation)."""
+    return not item.scan and item.doc_type in IMAGE_DOC_TYPES
+
+
 def pages_for(base_seed: int, index: int, doc_type: str, bounds: tuple[int, int]) -> int:
     """Nombre de pages du document, tiré dans ``bounds`` avec une graine indépendante."""
     return make_rng(derive_seed(base_seed, index, f"{doc_type}:pages")).randint(*bounds)
@@ -160,6 +175,25 @@ def _scan_description(settings: ScanSettings) -> dict:
             "binding": f"pypdfium2 {metadata.version('pypdfium2')}",
         },
     }
+
+
+def _image_description(settings: ImageSettings, figures: int | None = None) -> dict:
+    """Réglages d'image et versions des bibliothèques qui les produisent."""
+    description = {
+        "dpi": settings.dpi,
+        "format": settings.format,
+        "jpeg_quality": settings.jpeg_quality if settings.format == "jpeg" else None,
+        "color": "gray",
+        "encoder": {
+            "name": "Pillow",
+            "version": PIL.__version__,
+            "jpeg_library": features.version("jpg"),
+            "freetype": features.version("freetype2"),
+        },
+    }
+    if figures is not None:
+        description["count"] = figures
+    return description
 
 
 def _manifest_record(
@@ -202,6 +236,11 @@ def _manifest_record(
             "signature": options.signature,
             "pages_requested": pages_requested,
             "scan": None if options.scan is None else _scan_description(options.scan),
+            "images": (
+                _image_description(options.image, len(document.figures))
+                if document.figures
+                else None
+            ),
         },
         "entities": document.entities,
     }
@@ -227,6 +266,7 @@ def build_report(
 
     native = [r for r in records if r["render"]["kind"] == "native"]
     scanned = [r for r in records if r["render"]["kind"] == "scan"]
+    imaged = [r for r in records if r["images"]]
     warnings = list(calibration.warnings) if calibration else []
     measured = stats(records)
     target = None
@@ -243,6 +283,7 @@ def build_report(
             "reached": reached,
             "tuned": list(calibration.tuned) if calibration else [],
             "estimated_scan_bytes": calibration.estimated_scan_bytes if calibration else None,
+            "estimated_image_bytes": calibration.estimated_image_bytes if calibration else None,
         }
         if records and not reached:
             warnings.append(
@@ -278,15 +319,22 @@ def build_report(
                 "scan_dpi": config.scan_dpi,
                 "scan_color": config.scan_color,
                 "scan_quality": config.scan_quality,
+                "image_dpi": config.image_dpi,
+                "image_quality": config.image_quality,
+                "image_format": config.image_format,
             },
             "measured": {
                 **measured,
                 "native": stats(native),
                 "scan": stats(scanned),
+                "with_images": stats(imaged),
                 "scan_ratio": round(len(scanned) / len(records), 4) if records else None,
             },
             "scan_settings": _scan_description(_final_settings(config, calibration))
             if scanned
+            else None,
+            "image_settings": _image_description(_final_image_settings(config, calibration))
+            if imaged
             else None,
             "total_target": (
                 {
@@ -313,6 +361,22 @@ def _final_settings(config: BatchConfig, calibration: Calibration | None) -> Sca
         dpi=DEFAULT_SCAN_DPI if config.scan_dpi is None else config.scan_dpi,
         color=config.scan_color,
         jpeg_quality=DEFAULT_JPEG_QUALITY if config.scan_quality is None else config.scan_quality,
+    )
+
+
+def _final_image_settings(config: BatchConfig, calibration: Calibration | None) -> ImageSettings:
+    if calibration is not None and calibration.image_settings is not None:
+        return calibration.image_settings
+    return _image_base(config)
+
+
+def _image_base(config: BatchConfig) -> ImageSettings:
+    return ImageSettings(
+        dpi=DEFAULT_IMAGE_DPI if config.image_dpi is None else config.image_dpi,
+        jpeg_quality=DEFAULT_IMAGE_QUALITY
+        if config.image_quality is None
+        else config.image_quality,
+        format=config.image_format,
     )
 
 
@@ -364,6 +428,7 @@ def _validate(config: BatchConfig) -> None:
         raise ValueError("la taille moyenne cible doit être strictement positive")
     if not 0 < config.target_tolerance <= 1:
         raise ValueError("la tolérance de taille doit être dans ]0, 1]")
+    _image_base(config)  # valide dpi, qualité et format d'image demandés
     # Valide aussi dpi / qualité / couleur demandés.
     ScanSettings(
         dpi=DEFAULT_SCAN_DPI if config.scan_dpi is None else config.scan_dpi,
@@ -423,7 +488,8 @@ def _run_batch(config: BatchConfig) -> Iterator[dict]:
                         and doc_type_for(int(index_text), config.doc_types) == doc_type
                     ):
                         raise FileExistsError(f"fichier cible existant : {path}")
-    base_options = RenderOptions(logo=config.logo, signature=config.signature)
+    image_base = _image_base(config)
+    base_options = RenderOptions(logo=config.logo, signature=config.signature, image=image_base)
     # Un seul rendu conservé : les précontrôles de grands lots restent bornés en mémoire.
     fitted_render: tuple[PlannedDocument, Rendered] | None = None
 
@@ -477,6 +543,7 @@ def _run_batch(config: BatchConfig) -> Iterator[dict]:
     # Avant toute écriture : une page cible inatteignable échoue sans rien laisser dans le dossier.
     plan = [fit(item) if item.pages is not None else item for item in plan]
     population_counts = None
+    image_native_count = 0
     if total_mode and config.target_mean_bytes is not None:
         sample_config = replace(config, count=min(config.calibration_count, config.max_count))
         sample = plan_documents(sample_config)
@@ -484,13 +551,16 @@ def _run_batch(config: BatchConfig) -> Iterator[dict]:
         # représentant de chaque catégorie absente du préfixe.
         scan_count = 0
         first_missing = {}
-        present_kinds = {item.scan for item in sample}
+        present_kinds = {(item.scan, _imaged(item)) for item in sample}
         for index in range(config.start_index, config.start_index + config.max_count):
             scanned = is_scan(index, config.doc_types, config.scan_ratio)
+            doc_type = doc_type_for(index, config.doc_types)
+            has_images = not scanned and doc_type in IMAGE_DOC_TYPES
             scan_count += scanned
-            if scanned not in present_kinds and scanned not in first_missing:
-                doc_type = doc_type_for(index, config.doc_types)
-                first_missing[scanned] = PlannedDocument(
+            image_native_count += has_images
+            kind = (scanned, has_images)
+            if kind not in present_kinds and kind not in first_missing:
+                first_missing[kind] = PlannedDocument(
                     index,
                     doc_type,
                     scanned,
@@ -504,6 +574,26 @@ def _run_batch(config: BatchConfig) -> Iterator[dict]:
     else:
         sample = plan
 
+    images = None
+    if config.target_mean_bytes is not None and any(
+        doc_type in IMAGE_DOC_TYPES for doc_type in config.doc_types
+    ):
+        images = ImageTuning(
+            base=image_base,
+            free_dpi=config.image_dpi is None,
+            free_quality=config.image_quality is None and config.image_format == "jpeg",
+            has_images=_imaged,
+            stream_bytes=lambda item, settings: renderer.image_bytes(
+                build(item)[0], config.profile, settings
+            ),
+            render=lambda item, settings: renderer.render_native(
+                build(item)[0],
+                config.profile,
+                doc_id_for(item.index),
+                replace(base_options, image=settings),
+            ),
+            native_count=image_native_count if total_mode else None,
+        )
     calibration: Calibration | None = None
     if config.target_mean_bytes is not None:
         calibration = calibrate(
@@ -514,9 +604,12 @@ def _run_batch(config: BatchConfig) -> Iterator[dict]:
             quality=config.scan_quality,
             render_native=render_native,
             population_counts=population_counts,
+            images=images,
         )
     scan_settings = _final_settings(config, calibration)
-    scan_options = RenderOptions(config.logo, config.signature, scan_settings)
+    image_settings = _final_image_settings(config, calibration)
+    native_options = replace(base_options, image=image_settings)
+    scan_options = RenderOptions(config.logo, config.signature, scan_settings, image_settings)
 
     medium_dir.mkdir(parents=True, exist_ok=True)
 
@@ -569,8 +662,13 @@ def _run_batch(config: BatchConfig) -> Iterator[dict]:
         total_bytes = 0
         for item, target in documents():
             document, seed = build(item)
-            options = scan_options if item.scan else base_options
-            if not item.scan and fitted_render is not None and fitted_render[0] == item:
+            options = scan_options if item.scan else native_options
+            if (
+                not item.scan
+                and native_options == base_options
+                and fitted_render is not None
+                and fitted_render[0] == item
+            ):
                 rendered = fitted_render[1]
             else:
                 rendered = renderer.render(
@@ -605,6 +703,7 @@ def _run_batch(config: BatchConfig) -> Iterator[dict]:
                     "bytes": record["bytes"],
                     "pages": record["pages"],
                     "render": {"kind": record["render"]["kind"]},
+                    "images": record["render"]["images"] is not None,
                 }
             )
             total_bytes += record["bytes"]

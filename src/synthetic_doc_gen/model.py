@@ -35,7 +35,19 @@ class Table:
     emphasized_rows: frozenset[int] = frozenset()
 
 
-Block = Heading | Paragraph | KeyValues | Table
+@dataclass(frozen=True)
+class Figure:
+    """Image synthétique légendée ; ses pixels se déduisent de ``modality`` et ``seed``."""
+
+    caption: str
+    #: Modalité simulée (« echographie », « irm », « radiographie »).
+    modality: str
+    seed: int
+    #: Hauteur / largeur de l'image imprimée.
+    aspect: float = 0.75
+
+
+Block = Heading | Paragraph | KeyValues | Table | Figure
 
 
 @dataclass(frozen=True)
@@ -49,3 +61,7 @@ class Document:
     entities: dict[str, str] = field(default_factory=dict)
     #: Praticien fictif qui « signe » le document (signature optionnelle au rendu).
     signer: str = ""
+
+    @property
+    def figures(self) -> tuple[Figure, ...]:
+        return tuple(block for block in self.blocks if isinstance(block, Figure))

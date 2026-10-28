@@ -10,8 +10,8 @@ from pathlib import Path
 
 from synthetic_doc_gen import SYNTHETIC_MARKER, __version__
 from synthetic_doc_gen.batch import MANIFEST_NAME, REPORT_NAME, BatchConfig, BatchReport, run_batch
-from synthetic_doc_gen.generators import DOC_TYPE_DESCRIPTIONS, GENERATORS
-from synthetic_doc_gen.options import SCAN_COLORS
+from synthetic_doc_gen.generators import DEFAULT_DOC_TYPES, DOC_TYPE_DESCRIPTIONS, GENERATORS
+from synthetic_doc_gen.options import IMAGE_FORMATS, SCAN_COLORS
 from synthetic_doc_gen.pagination import MAX_PAGES
 from synthetic_doc_gen.profiles import PROFILES, get_profile
 from synthetic_doc_gen.renderers import RENDERERS
@@ -96,8 +96,9 @@ def _build_parser() -> argparse.ArgumentParser:
     gen.add_argument(
         "-t",
         "--types",
-        default=",".join(GENERATORS),
-        help=f"types séparés par des virgules, parmi : {', '.join(GENERATORS)} (tous)",
+        default=",".join(DEFAULT_DOC_TYPES),
+        help=f"types séparés par des virgules, parmi : {', '.join(GENERATORS)} "
+        f"(défaut : {', '.join(DEFAULT_DOC_TYPES)})",
     )
     gen.add_argument("-p", "--profile", default="standard", choices=list(PROFILES))
     gen.add_argument("-m", "--medium", default="pdf", choices=list(RENDERERS))
@@ -126,14 +127,29 @@ def _build_parser() -> argparse.ArgumentParser:
     layout.add_argument("--scan-dpi", type=int, help="résolution des scans (150)")
     layout.add_argument("--scan-color", choices=SCAN_COLORS, default="color", help="(color)")
     layout.add_argument("--scan-quality", type=int, help="qualité JPEG des scans, 1-95 (75)")
+    layout.add_argument(
+        "--image-dpi", type=int, help="résolution des images synthétiques (types d'imagerie, 200)"
+    )
+    layout.add_argument(
+        "--image-quality",
+        type=int,
+        help="qualité JPEG de ces images, 1-95 (85 ; sans effet en PNG)",
+    )
+    layout.add_argument(
+        "--image-format",
+        choices=IMAGE_FORMATS,
+        default="jpeg",
+        help="encodage de ces images (jpeg)",
+    )
     layout.add_argument("--logo", action="store_true", help="logo fictif d'établissement")
     layout.add_argument("--signature", action="store_true", help="signature manuscrite fictive")
     layout.add_argument(
         "--target-size",
         type=_size,
         metavar="TAILLE",
-        help="taille moyenne visée par fichier (ex. 150k, 1.5M) : règle dpi/qualité des scans "
-        "non imposés, sans remplissage ; avertit si l'écart mesuré dépasse la tolérance",
+        help="taille moyenne visée par fichier (ex. 150k, 1.5M) : règle dpi/qualité des scans et "
+        "des images synthétiques non imposés, sans remplissage ; avertit si l'écart mesuré "
+        "dépasse la tolérance",
     )
     layout.add_argument(
         "--target-tolerance",
@@ -179,6 +195,9 @@ def _cmd_generate(args: argparse.Namespace) -> int:
         scan_dpi=args.scan_dpi,
         scan_color=args.scan_color,
         scan_quality=args.scan_quality,
+        image_dpi=args.image_dpi,
+        image_quality=args.image_quality,
+        image_format=args.image_format,
         logo=args.logo,
         signature=args.signature,
         target_mean_bytes=args.target_size,

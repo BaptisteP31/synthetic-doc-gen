@@ -34,6 +34,9 @@ uv run synthetic-doc-gen generate -o out2 -n 5 -t bilan-biologique -p compact
 # régénérer uniquement les documents 100 à 109 du même lot
 uv run synthetic-doc-gen generate -o out3 -n 10 -s 42 --start-index 100
 
+# comptes rendus d'imagerie (~500 ko chacun, images synthétiques), taille moyenne visée 300 ko
+uv run synthetic-doc-gen generate -o out5 -n 10 -t compte-rendu-imagerie --target-size 300k
+
 # corpus mixte : 30 % de scans (images seules, 200 dpi, gris), 2 à 5 pages, logo et signature
 # fictifs, taille moyenne visée 250 ko par fichier
 uv run synthetic-doc-gen generate -o out4 -n 50 -s 42 --scan-ratio 30% --pages 2-5 \
@@ -100,8 +103,9 @@ ces options, les fichiers sont identiques, octet pour octet, à ceux des version
 | `--scan-ratio R` | proportion de **scans** (`0.3` ou `30%`, défaut 0). Un scan est un PDF *image seule* : une image par page, aucun texte extractible, comme une numérisation non océrisée. Les autres sont des PDF **natifs** (texte sélectionnable). |
 | `--pages N` ou `A-B` | nombre de pages **exact** par document (1-50) ; avec `A-B`, tirage par document, reproductible. Défaut : longueur du profil. |
 | `--scan-dpi`, `--scan-color`, `--scan-quality` | résolution (72-600, défaut 150), `color`/`gray`/`bw` (défaut `color`), qualité JPEG 1-95 (défaut 75 ; sans effet en `bw`, compressé sans perte). |
+| `--image-dpi`, `--image-quality`, `--image-format` | images synthétiques des types d'imagerie : résolution (72-600, défaut 200), qualité JPEG 1-95 (défaut 85), `jpeg` (défaut) ou `png` (sans perte, qualité sans effet). Sans effet sur les autres types. |
 | `--logo`, `--signature` | logo d'établissement et signature manuscrite **fictifs**, dessinés en vectoriel (légendés « LOGO FICTIF » / « signature fictive »). Présents aussi dans les scans. |
-| `--target-size T` | taille moyenne visée par fichier (`250k`, `1.5M` ; k = 1000 octets), voir ci-dessous. `--target-tolerance` : écart toléré (défaut 10 %). |
+| `--target-size T` | taille moyenne visée par fichier (`250k`, `1.5M` ; k = 1000 octets) : règle les scans et les images synthétiques, voir ci-dessous. `--target-tolerance` : écart toléré (défaut 10 %). |
 
 **Répartition natifs / scans.** Déterministe : la décision ne dépend que de l'index, des types
 et de la proportion, avec une répartition régulière dans chaque type (pas de corrélation avec la
@@ -119,16 +123,21 @@ document concerné. Une cible peut aussi être impossible si le contenu ajouté 
 de pages demandé, notamment avec une signature ; choisissez une autre cible ou un autre profil.
 
 **Taille moyenne cible (au mieux, sans remplissage).** Aucun octet inutile n'est ajouté. Le
-poids d'un PDF natif vient de son contenu (≈ 3-5 ko par page) ; seul celui des scans se règle,
-par la résolution puis, en butée, la qualité JPEG, dans des plages réalistes (100-400 dpi,
-qualité 40-95). Le réglage est calculé avant toute écriture, sur un échantillon de pages
+poids d'un PDF natif sans image vient de son contenu (≈ 3-5 ko par page) et ne se règle pas ;
+celui des scans et celui des images synthétiques des PDF natifs d'imagerie se règlent, par la
+résolution puis, en butée, la qualité JPEG, dans des plages réalistes (100-400 dpi,
+qualité 40-95). Avec images et scans dans le même lot, les images sont réglées d'abord vers
+la taille par fichier qui donnerait la moyenne cible (scans et natifs à images visent alors la
+même taille) ; les scans absorbent ensuite l'écart qui reste, par exemple quand les images
+sont en butée. Pour le PNG, seule la résolution agit. Le poids des images n'est jamais gonflé :
+il vient de leur définition et de leur compression. Le réglage est calculé avant toute écriture, sur un échantillon de pages
 réellement rendues et le nombre réel de pages de tous les scans, en déduisant la contribution
 mesurée sur au plus huit natifs. L’estimation multiplie la taille moyenne des flux image
 de dix pages au plus (réparties sur six scans au plus) par le nombre moyen réel de pages,
 puis ajoute 2 000 octets de structure PDF par document. Cette approximation peut varier avec
 le contenu et le nombre de pages ; le rapport donne la mesure effective. Les PDF utilisés pour
 compter les pages sont libérés au fur et à mesure, sauf ceux de l’échantillon. Les réglages imposés
-(`--scan-dpi`, `--scan-quality`) ne sont jamais modifiés. La moyenne **réelle** est ensuite
+(`--scan-dpi`, `--scan-quality`, `--image-dpi`, `--image-quality`) ne sont jamais modifiés. La moyenne **réelle** est ensuite
 mesurée sur les fichiers écrits (`report.json`, résumé en fin de commande) ; si elle s'écarte de
 la cible au-delà de la tolérance, ou si la cible est hors de portée (aucun scan, réglages
 imposés, limites réalistes), un **avertissement** est affiché sur stderr et consigné dans le
@@ -143,8 +152,12 @@ d’autres réglages. Pour reproduire les octets d’un sous-lot, relevez `scan_
 doivent aussi être identiques.
 
 `report.json` : paramètres demandés, mesures (total, moyenne, min/max, pages, ventilation
-natifs/scans, proportion effective), réglages de scan retenus, bloc `target` (écart, `reached`,
-réglages ajustés) et avertissements. En Python, `run_batch` est un générateur dont la valeur de
+natifs/scans/documents à images, proportion effective), réglages de scan (`scan_settings`) et
+d'image (`image_settings`, avec versions de Pillow, libjpeg et FreeType) retenus, bloc `target`
+(écart, `reached`, réglages ajustés dont `image_dpi` / `image_jpeg_quality`) et avertissements.
+La cible n'est pas atteinte, avec avertissement, si l'écart mesuré dépasse la tolérance ou si les
+plages réalistes ne suffisent pas (ex. 20 ko pour des comptes rendus d'imagerie : le minimum
+est ≈ 70 ko à 100 dpi, qualité 40). En Python, `run_batch` est un générateur dont la valeur de
 retour (`StopIteration.value`) est ce rapport.
 
 ### Types de documents
@@ -153,6 +166,21 @@ retour (`StopIteration.value`) est ce rapport.
 |--------------------|----------------------------------------------------------------------|
 | `compte-rendu`     | Compte rendu de consultation (5 spécialités fictives, sections cliniques) |
 | `bilan-biologique` | NFS, biochimie, inflammation ; valeurs de référence, indicateurs H/B |
+| `compte-rendu-imagerie` | Échographie abdominale, IRM cérébrale ou radiographie thoracique : texte sélectionnable et 4 à 6 images synthétiques, ≈ 500 ko par défaut |
+
+Le compte rendu d'imagerie n'est pas dans les types par défaut (`--types` le demande) : sans
+`--types`, les lots restent identiques à ceux des versions précédentes.
+
+**Images synthétiques.** Fantômes procéduraux (secteur échographique, coupe axiale abstraite,
+cliché thoracique abstrait) tirés d'une graine : aucune image réelle ni donnée de patient.
+Chaque image porte dans ses pixels un bandeau « IMAGE SYNTHÉTIQUE - DOCUMENT SYNTHÉTIQUE TEST »
+et une étiquette « … FICTIVE » ; le JPEG contient en plus un commentaire (segment COM) avec la
+mention, la modalité et la graine. Les images sont en niveaux de gris et imprimées à taille
+fixe (deux par ligne) : la résolution (`--image-dpi`) change leur poids, pas la mise en page,
+donc ni le nombre de pages ni `--pages`. Le flux JPEG (ou Flate pour le PNG) est intégré tel
+quel au PDF. Dans un scan, elles sont rastérisées avec la page ; le marquage reste visible.
+Pour `--pages`, on ajoute des comptes rendus d'examens antérieurs (texte). Le contenu de base
+tient en 2 pages ; `--pages 1` échoue donc avec l'identifiant du document concerné.
 
 Les types sont répartis en tournant selon l'index du document et l'ordre fourni à `--types` ;
 modifier cet ordre change le type attribué à un index.
@@ -197,12 +225,14 @@ Une ligne JSON (clés triées) par document :
  "generator": {"name": "synthetic-doc-gen", "version": "0.1.0"},
  "renderer": {"name": "reportlab", "version": "5.1.0"},
  "render": {"kind": "native", "logo": false, "signature": false, "pages_requested": null,
-            "scan": null},
+            "scan": null, "images": null},
  "entities": {"patient_name": "…", "birth_date": "…", "patient_id": "SYN-PAT-…", "…": "…"}}
 ```
 
 `render.kind` vaut `native` ou `scan` ; pour un scan, `render.scan` donne dpi, couleur, qualité
-JPEG et version de pdfium (champs ajoutés sans changer `schema_version`). `entities` contient la vérité terrain fictive (nom, date de naissance, identifiants, date,
+JPEG et version de pdfium ; pour un document à images, `render.images` donne nombre d'images,
+dpi, format, qualité JPEG et versions de Pillow, libjpeg et FreeType (champs ajoutés sans changer
+`schema_version`). `entities` contient la vérité terrain fictive (nom, date de naissance, identifiants, date,
 praticien, nombre de résultats anormaux…), utile pour évaluer une extraction ou une
 anonymisation. Les `path` sont relatifs au dossier de sortie.
 
@@ -214,10 +244,11 @@ src/synthetic_doc_gen/
 ├── fictional.py    # personnes, praticiens, établissements fictifs
 ├── generators/     # un module par type de document : (rng, profil) -> Document
 ├── renderers/      # un moteur par média : Document -> octets (pdf.py = ReportLab,
-│                   #   scan.py = rastérisation pdfium -> PDF image seule, artwork.py = logo/signature)
+│                   #   scan.py = rastérisation pdfium -> PDF image seule, artwork.py = logo/signature,
+│                   #   imaging.py = images synthétiques marquées)
 ├── options.py      # réglages de scan, logo, signature, bornes réalistes
 ├── pagination.py   # ajustement exact du nombre de pages par contenu réel
-├── sizing.py       # réglage dpi/qualité des scans pour la taille moyenne cible
+├── sizing.py       # réglage dpi/qualité des scans et des images pour la taille moyenne cible
 ├── profiles.py     # profils nommés
 ├── seeding.py      # graine par document
 ├── batch.py        # lot + manifeste
@@ -259,14 +290,19 @@ Vérifier qu'un scan n'a pas de texte : `pdftotext scan.pdf -` (vide) et `pdfima
 - Scans « propres » : rastérisation fidèle du PDF natif, sans bruit, rotation, plis ni ombres
   (le noir et blanc est une simple binarisation). Pas de tampon ; logo et signature sont
   vectoriels et clairement fictifs.
-- Taille cible best effort : estimée sur un échantillon, mesurée ensuite ; les PDF natifs ne se
-  règlent pas (≈ 3-5 ko/page, polices non incorporées) et un lot sans scan ne peut pas approcher
-  une cible élevée. Le nombre de pages d'un scan est celui de son équivalent natif.
+- Taille cible best effort : estimée sur un échantillon, mesurée ensuite ; les PDF natifs sans
+  image ne se règlent pas (≈ 3-5 ko/page, polices non incorporées) et un lot sans scan ni image
+  ne peut pas approcher une cible élevée. Le nombre de pages d'un scan est celui de son équivalent natif.
 - Pages : minimum selon profil et options (logo, signature) ; les pages ajoutées sont des notes
   ou historiques fictifs répétitifs dans leur forme, destinés aux tests de volumétrie.
 - Les scans dépendent de pdfium (pypdfium2) : la rastérisation n'est pas garantie identique entre
   versions ; la rastérisation et l'ajustement de taille ralentissent la génération (≈ 0,1-0,5 s
   par page de scan).
+- Images d'imagerie : trois modalités abstraites en niveaux de gris, volontairement peu
+  réalistes ; pas de DICOM. Les octets des images dépendent de Pillow, libjpeg et FreeType
+  (versions dans le manifeste). Mesure locale (cette machine) : 20 comptes rendus d'imagerie
+  natifs en ≈ 1,7 s (≈ 0,5 Mo chacun), ≈ 5 s avec `--pages 4`, ≈ 3,4 s avec `--target-size` ;
+  avec 50 % de scans et `--target-size`, ≈ 10 s (rastérisation pdfium).
 - Français uniquement ; gabarits de texte simples (5 spécialités, 21 analytes).
 - Les profils sont intégrés au code (pas de fichier de profil externe).
 - La reproductibilité des octets dépend de l'environnement (voir Déterminisme).

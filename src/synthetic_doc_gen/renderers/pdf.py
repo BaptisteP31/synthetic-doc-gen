@@ -28,14 +28,18 @@ from reportlab.platypus import (
 )
 
 from synthetic_doc_gen import SYNTHETIC_MARKER, __version__, model
-from synthetic_doc_gen.options import RenderOptions
+from synthetic_doc_gen.options import ImageSettings, RenderOptions
 from synthetic_doc_gen.profiles import Profile
-from synthetic_doc_gen.renderers import Rendered, scan
+from synthetic_doc_gen.renderers import Rendered, imaging, scan
 from synthetic_doc_gen.renderers.artwork import FictionalLogo, FictionalSignature
 
 PAGE_SIZES = {"A4": A4, "LETTER": LETTER}
 DISCLAIMER = "Données entièrement fictives - aucun patient réel - ne pas utiliser en pratique"
 WARNING_RED = colors.HexColor("#b00020")
+#: Images par ligne et espace entre elles (points) : taille imprimée fixe, quelle que soit la
+#: résolution demandée, pour que la mise en page (donc le nombre de pages) n'en dépende pas.
+FIGURES_PER_ROW = 2
+FIGURE_GAP = 8
 
 
 class _NumberedCanvas(Canvas):
@@ -167,6 +171,47 @@ def _table(block: model.Table, profile: Profile, styles, width: float) -> Table:
     return table
 
 
+def _content_width(profile: Profile) -> float:
+    return PAGE_SIZES[profile.page_size][0] - 2 * profile.margin_mm * mm
+
+
+def _figure_size(figure: model.Figure, width: float) -> tuple[float, float]:
+    """Taille imprimée (points) d'une image dans une ligne de ``FIGURES_PER_ROW``."""
+    column = (width - FIGURE_GAP * (FIGURES_PER_ROW - 1)) / FIGURES_PER_ROW
+    return column, column * figure.aspect
+
+
+def _figure_row(
+    figures: list[model.Figure], width: float, styles, options: RenderOptions
+) -> Flowable:
+    """Une ligne d'images avec leur légende, solidaires sur une même page."""
+    column = _figure_size(figures[0], width)[0]
+    images, captions = [], []
+    for figure in figures:
+        size = _figure_size(figure, width)
+        images.append(
+            imaging.SyntheticImage(figure.modality, figure.seed, *size, settings=options.image)
+        )
+        captions.append(_p(figure.caption, styles["cell"]))
+    empty = FIGURES_PER_ROW - len(figures)
+    row = Table(
+        [images + [""] * empty, captions + [""] * empty],
+        colWidths=[column + FIGURE_GAP] * (FIGURES_PER_ROW - 1) + [column],
+    )
+    row.setStyle(
+        TableStyle(
+            [
+                ("LEFTPADDING", (0, 0), (-1, -1), 0),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+                ("TOPPADDING", (0, 0), (-1, -1), 1),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
+                ("VALIGN", (0, 0), (-1, -1), "TOP"),
+            ]
+        )
+    )
+    return KeepTogether([row, Spacer(1, 6)])
+
+
 def _flowables(
     document: model.Document, profile: Profile, width: float, options: RenderOptions
 ) -> list[Flowable]:
@@ -175,7 +220,17 @@ def _flowables(
     if options.logo:
         out += [FictionalLogo(document.issuer, profile.accent_color), Spacer(1, 6)]
     out.append(_p(document.title, styles["title"]))
+    row: list[model.Figure] = []
     for block in document.blocks:
+        if isinstance(block, model.Figure):
+            row.append(block)
+            if len(row) == FIGURES_PER_ROW:
+                out.append(_figure_row(row, width, styles, options))
+                row = []
+            continue
+        if row:
+            out.append(_figure_row(row, width, styles, options))
+            row = []
         if isinstance(block, model.Heading):
             out.append(_p(block.text, styles["h1" if block.level == 1 else "h2"]))
         elif isinstance(block, model.Paragraph):
@@ -209,6 +264,8 @@ def _flowables(
             out += [_table(block, profile, styles, width), Spacer(1, 6)]
         else:  # pragma: no cover - garde pour les futurs blocs
             raise TypeError(f"bloc non pris en charge : {type(block).__name__}")
+    if row:
+        out.append(_figure_row(row, width, styles, options))
     if options.signature and document.signer:
         # Solidaire du dernier élément : la signature ne se retrouve pas seule sur une page.
         last = out.pop()
@@ -266,6 +323,19 @@ class ReportLabPdfRenderer:
         )
         return Rendered(data=data, pages=pages)
 
+    def image_bytes(
+        self, document: model.Document, profile: Profile, settings: ImageSettings
+    ) -> int:
+        """Octets des flux image du document aux réglages donnés (0 sans image)."""
+        width = _content_width(profile)
+        total = 0
+        for figure in document.figures:
+            size = _figure_size(figure, width)
+            total += len(
+                imaging.encode_for(figure.modality, figure.seed, *size, settings=settings).data
+            )
+        return total
+
     def render_native(
         self,
         document: model.Document,
@@ -296,7 +366,7 @@ class ReportLabPdfRenderer:
             _decorate_page, issuer=document.issuer, accent=profile.accent_color
         )
         doc.build(
-            _flowables(document, profile, pagesize[0] - 2 * margin, options),
+            _flowables(document, profile, _content_width(profile), options),
             onFirstPage=decorate,
             onLaterPages=decorate,
             canvasmaker=functools.partial(

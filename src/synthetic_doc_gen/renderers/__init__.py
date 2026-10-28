@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from typing import Protocol
 
 from synthetic_doc_gen.model import Document
-from synthetic_doc_gen.options import RenderOptions
+from synthetic_doc_gen.options import ImageSettings, RenderOptions
 from synthetic_doc_gen.profiles import Profile
 
 
@@ -39,6 +39,10 @@ class Renderer(Protocol):
         options: RenderOptions | None = None,
     ) -> Rendered:
         """Rendu sans scan : sert à mesurer pages et taille avant de choisir les réglages."""
+        ...
+
+    def image_bytes(self, document: Document, profile: Profile, settings: ImageSettings) -> int:
+        """Octets des images du document aux réglages donnés (0 sans image)."""
         ...
 
 

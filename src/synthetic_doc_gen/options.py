@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 SCAN_COLORS = ("color", "gray", "bw")
+#: Encodage des images synthétiques des PDF natifs : JPEG (avec perte) ou PNG (sans perte).
+IMAGE_FORMATS = ("jpeg", "png")
 
 #: Valeurs acceptées pour une demande explicite.
 DPI_LIMITS = (72, 600)
@@ -17,6 +19,8 @@ TUNING_QUALITY = (40, 95)
 
 DEFAULT_SCAN_DPI = 150
 DEFAULT_JPEG_QUALITY = 75
+DEFAULT_IMAGE_DPI = 200
+DEFAULT_IMAGE_QUALITY = 85
 
 
 @dataclass(frozen=True)
@@ -43,6 +47,30 @@ class ScanSettings:
 
 
 @dataclass(frozen=True)
+class ImageSettings:
+    """Réglages des images synthétiques incluses dans un PDF natif (ex. imagerie médicale)."""
+
+    #: Résolution : pixels par pouce de la taille imprimée de l'image.
+    dpi: int = DEFAULT_IMAGE_DPI
+    #: Qualité JPEG (ignorée en PNG, sans perte).
+    jpeg_quality: int = DEFAULT_IMAGE_QUALITY
+    format: str = "jpeg"
+
+    def __post_init__(self) -> None:
+        if self.format not in IMAGE_FORMATS:
+            raise ValueError(
+                f"format d'image inconnu : {self.format!r} ({', '.join(IMAGE_FORMATS)})"
+            )
+        if not DPI_LIMITS[0] <= self.dpi <= DPI_LIMITS[1]:
+            raise ValueError(f"dpi d'image hors de {DPI_LIMITS[0]}-{DPI_LIMITS[1]} : {self.dpi}")
+        if not QUALITY_LIMITS[0] <= self.jpeg_quality <= QUALITY_LIMITS[1]:
+            raise ValueError(
+                f"qualité JPEG d'image hors de {QUALITY_LIMITS[0]}-{QUALITY_LIMITS[1]} : "
+                f"{self.jpeg_quality}"
+            )
+
+
+@dataclass(frozen=True)
 class RenderOptions:
     """Options propres à un document rendu (le contenu textuel n'en dépend pas)."""
 
@@ -50,3 +78,5 @@ class RenderOptions:
     signature: bool = False
     #: ``None`` : PDF natif (texte sélectionnable) ; sinon PDF image seule (scan).
     scan: ScanSettings | None = None
+    #: Images synthétiques des documents qui en comportent (sans effet pour les autres).
+    image: ImageSettings = ImageSettings()
