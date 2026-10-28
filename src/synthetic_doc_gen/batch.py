@@ -95,6 +95,8 @@ def run_batch(config: BatchConfig) -> Iterator[dict]:
         raise ValueError("count et start_index doivent être positifs ou nuls")
     if not config.doc_types:
         raise ValueError("au moins un type de document est requis")
+    for doc_type in config.doc_types:
+        get_generator(doc_type)  # échoue tôt sur un type inconnu, quel que soit count
     renderer = get_renderer(config.medium)
     indices = range(config.start_index, config.start_index + config.count)
     plan = [
@@ -104,8 +106,6 @@ def run_batch(config: BatchConfig) -> Iterator[dict]:
         )
         for i in indices
     ]
-    for _, doc_type in plan:
-        get_generator(doc_type)  # échoue tôt sur un type inconnu
 
     manifest_path = config.out_dir / MANIFEST_NAME
     targets = [

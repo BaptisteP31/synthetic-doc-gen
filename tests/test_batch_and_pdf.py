@@ -109,3 +109,12 @@ def test_overwrite_check_happens_before_any_write(make_config):
 def test_invalid_config_is_rejected(make_config, overrides):
     with pytest.raises(ValueError):
         list(run_batch(make_config(**overrides)))
+
+
+@pytest.mark.parametrize("count", [0, 1])
+def test_unknown_type_is_rejected_whatever_the_count(make_config, count):
+    # Types non utilisés par le lot (count=0, ou au-delà du premier type) validés aussi.
+    config = make_config(count=count, doc_types=("compte-rendu", "inconnu"))
+    with pytest.raises(ValueError):
+        list(run_batch(config))
+    assert not (config.out_dir / MANIFEST_NAME).exists()

@@ -55,3 +55,10 @@ def test_list_command(capsys):
     out = capsys.readouterr().out
     assert "compte-rendu" in out and "bilan-biologique" in out and "standard" in out
     assert "pdf" in out
+
+
+def test_cli_rejects_unknown_type_with_empty_batch(tmp_path, capsys):
+    out = tmp_path / "o"
+    assert main(["generate", "-o", str(out), "-n", "0", "-t", "inconnu"]) == 2
+    assert "type de document inconnu" in capsys.readouterr().err
+    assert not (out / "manifest.jsonl").exists()
