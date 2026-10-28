@@ -306,3 +306,21 @@ Vérifier qu'un scan n'a pas de texte : `pdftotext scan.pdf -` (vide) et `pdfima
 - Français uniquement ; gabarits de texte simples (5 spécialités, 21 analytes).
 - Les profils sont intégrés au code (pas de fichier de profil externe).
 - La reproductibilité des octets dépend de l'environnement (voir Déterminisme).
+
+### Parallélisme et grands lots
+
+`--jobs N` utilise N processus de rendu (1 par défaut). Le manifeste et les fichiers
+sont publiés dans l'ordre des indices, indépendamment de l'ordre de fin des rendus.
+En mode `--total-size`, seul le premier préfixe atteignant la cible est publié ;
+des rendus anticipés peuvent néanmoins être calculés puis abandonnés. Au plus N
+rendus sont en attente ; davantage de processus augmente l'utilisation mémoire.
+La calibration et les précontrôles de pagination restent séquentiels. Une erreur ou
+une interruption laisse le préfixe déjà inscrit dans le manifeste, sans rapport final.
+
+`--shard-size N` range les documents dans `pdf/000000/`, `pdf/000001/`, etc. :
+le numéro est le quotient de l'indice absolu par N, y compris avec `--start-index`.
+Les chemins du manifeste sont relatifs au dossier de sortie et incluent ce sous-dossier.
+Les liens symboliques existants pour le dossier du support ou les sous-dossiers visés
+sont refusés. Comme pour les sorties classiques, ces vérifications supposent que le
+dossier de sortie n'est pas modifié simultanément par un autre programme ; le verrou
+ne protège que les générations utilisant cet outil.

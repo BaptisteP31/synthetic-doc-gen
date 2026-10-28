@@ -83,6 +83,8 @@ def _build_parser() -> argparse.ArgumentParser:
         metavar="TAILLE",
         help="taille totale minimale des PDF (ex. 10M)",
     )
+    gen.add_argument("--jobs", type=int, default=1, help="processus de rendu (1 par défaut)")
+    gen.add_argument("--shard-size", type=int, help="nombre d'indices par sous-dossier")
     gen.add_argument(
         "--max-count", type=int, default=10000, help="limite de documents en mode total (10000)"
     )
@@ -184,6 +186,8 @@ def _cmd_generate(args: argparse.Namespace) -> int:
         total_size=args.total_size,
         max_count=args.max_count,
         calibration_count=args.calibration_count,
+        jobs=args.jobs,
+        shard_size=args.shard_size,
         base_seed=args.seed,
         doc_types=doc_types,
         profile=get_profile(args.profile),

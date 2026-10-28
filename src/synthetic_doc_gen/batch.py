@@ -6,11 +6,14 @@ import fcntl
 import hashlib
 import json
 import math
+import multiprocessing
 import os
 import platform
 import secrets
 import sys
+from collections import deque
 from collections.abc import Iterator, Sequence
+from concurrent.futures import ProcessPoolExecutor
 from dataclasses import asdict, dataclass, field, replace
 from fractions import Fraction
 from importlib import metadata
@@ -74,6 +77,8 @@ class BatchConfig:
     total_size: int | None = None
     max_count: int = 10000
     calibration_count: int = 10
+    jobs: int = 1
+    shard_size: int | None = None
 
 
 @dataclass(frozen=True)
@@ -160,8 +165,18 @@ def plan_documents(config: BatchConfig) -> list[PlannedDocument]:
     ]
 
 
-def _relative_path(medium: str, doc_id: str, doc_type: str, extension: str) -> Path:
-    return Path(medium) / f"{doc_id}_{doc_type}.{extension}"
+def _relative_path(
+    medium: str,
+    doc_id: str,
+    doc_type: str,
+    extension: str,
+    index: int = 0,
+    shard_size: int | None = None,
+) -> Path:
+    directory = Path(medium)
+    if shard_size is not None:
+        directory /= f"{index // shard_size:06d}"
+    return directory / f"{doc_id}_{doc_type}.{extension}"
 
 
 def _scan_description(settings: ScanSettings) -> dict:
@@ -246,8 +261,44 @@ def _manifest_record(
     }
 
 
+class _Stats:
+    def __init__(self):
+        self.count = self.size = self.pages = 0
+        self.minimum = self.maximum = None
+
+    def add(self, record):
+        size = record["bytes"]
+        self.count += 1
+        self.size += size
+        self.pages += record["pages"] or 0
+        self.minimum = size if self.minimum is None else min(self.minimum, size)
+        self.maximum = size if self.maximum is None else max(self.maximum, size)
+
+    def result(self):
+        return {
+            "documents": self.count,
+            "total_bytes": self.size,
+            "mean_bytes": round(self.size / self.count, 1) if self.count else None,
+            "min_bytes": self.minimum,
+            "max_bytes": self.maximum,
+            "total_pages": self.pages,
+            "mean_pages": round(self.pages / self.count, 2) if self.count else None,
+        }
+
+
+class _RecordStats:
+    def __init__(self):
+        self.groups = [_Stats() for _ in range(4)]
+
+    def append(self, record):
+        self.groups[0].add(record)
+        self.groups[1 if record["render"]["kind"] == "native" else 2].add(record)
+        if record["images"]:
+            self.groups[3].add(record)
+
+
 def build_report(
-    config: BatchConfig, records: Sequence[dict], calibration: Calibration | None
+    config: BatchConfig, records: Sequence[dict] | _RecordStats, calibration: Calibration | None
 ) -> BatchReport:
     """Mesures réelles du lot (taille des fichiers écrits) et avertissements éventuels."""
 
@@ -264,11 +315,16 @@ def build_report(
             "mean_pages": round(sum(pages) / len(pages), 2) if pages else None,
         }
 
-    native = [r for r in records if r["render"]["kind"] == "native"]
-    scanned = [r for r in records if r["render"]["kind"] == "scan"]
-    imaged = [r for r in records if r["images"]]
+    if isinstance(records, _RecordStats):
+        measured, native, scanned, imaged = (group.result() for group in records.groups)
+        count = measured["documents"]
+    else:
+        native = stats([r for r in records if r["render"]["kind"] == "native"])
+        scanned = stats([r for r in records if r["render"]["kind"] == "scan"])
+        imaged = stats([r for r in records if r["images"]])
+        measured = stats(records)
+        count = len(records)
     warnings = list(calibration.warnings) if calibration else []
-    measured = stats(records)
     target = None
     if config.target_mean_bytes is not None:
         mean = measured["mean_bytes"]
@@ -285,13 +341,13 @@ def build_report(
             "estimated_scan_bytes": calibration.estimated_scan_bytes if calibration else None,
             "estimated_image_bytes": calibration.estimated_image_bytes if calibration else None,
         }
-        if records and not reached:
+        if count and not reached:
             warnings.append(
                 f"taille moyenne cible non atteinte : {mean:.0f} octets mesurés pour "
                 f"{config.target_mean_bytes} visés ({deviation:+.1%}, tolérance "
                 f"±{config.target_tolerance:.0%}) ; cible au mieux, sans remplissage artificiel"
             )
-        elif not records:
+        elif not count:
             warnings.append("lot vide : taille moyenne cible non évaluable")
     return BatchReport(
         {
@@ -325,16 +381,16 @@ def build_report(
             },
             "measured": {
                 **measured,
-                "native": stats(native),
-                "scan": stats(scanned),
-                "with_images": stats(imaged),
-                "scan_ratio": round(len(scanned) / len(records), 4) if records else None,
+                "native": native,
+                "scan": scanned,
+                "with_images": imaged,
+                "scan_ratio": round(scanned["documents"] / count, 4) if count else None,
             },
             "scan_settings": _scan_description(_final_settings(config, calibration))
-            if scanned
+            if scanned["documents"]
             else None,
             "image_settings": _image_description(_final_image_settings(config, calibration))
-            if imaged
+            if imaged["documents"]
             else None,
             "total_target": (
                 {
@@ -380,6 +436,16 @@ def _image_base(config: BatchConfig) -> ImageSettings:
     )
 
 
+def _render_worker(config: BatchConfig, item: PlannedDocument, options: RenderOptions):
+    """Rendu isolé ; aucune écriture dans le dossier de sortie."""
+    renderer = get_renderer(config.medium)
+    document, seed = build_document(
+        item.index, config.base_seed, item.doc_type, config.profile, item.units
+    )
+    rendered = renderer.render(document, config.profile, doc_id_for(item.index), options)
+    return document, seed, rendered
+
+
 def run_batch(config: BatchConfig) -> Iterator[dict]:
     """Empêche deux générations simultanées dans un même dossier.
 
@@ -408,6 +474,8 @@ def _validate(config: BatchConfig) -> None:
         raise ValueError("max-count doit être positif et calibration-count dans 1-100")
     if config.total_size is not None and config.overwrite:
         raise ValueError("--force est incompatible avec --total-size")
+    if config.jobs < 1 or (config.shard_size is not None and config.shard_size < 1):
+        raise ValueError("jobs et shard-size doivent être strictement positifs")
     if config.count < 0 or config.start_index < 0:
         raise ValueError("count et start_index doivent être positifs ou nuls")
     if not config.doc_types:
@@ -454,7 +522,14 @@ def _run_batch(config: BatchConfig) -> Iterator[dict]:
     report_path = config.out_dir / REPORT_NAME
     targets = [
         config.out_dir
-        / _relative_path(config.medium, doc_id_for(item.index), item.doc_type, renderer.extension)
+        / _relative_path(
+            config.medium,
+            doc_id_for(item.index),
+            item.doc_type,
+            renderer.extension,
+            item.index,
+            config.shard_size,
+        )
         for item in plan
     ]
 
@@ -474,20 +549,19 @@ def _run_batch(config: BatchConfig) -> Iterator[dict]:
     medium_dir = config.out_dir / config.medium
     if medium_dir.is_symlink():
         raise ValueError("le dossier du support ne doit pas être un lien symbolique")
-    if total_mode and medium_dir.is_dir():
-        for path in medium_dir.iterdir():
-            for doc_type in config.doc_types:
-                suffix = f"_{doc_type}.{renderer.extension}"
-                if path.name.startswith("SYN-") and path.name.endswith(suffix):
-                    index_text = path.name[4 : -len(suffix)]
-                    if (
-                        index_text.isdigit()
-                        and config.start_index
-                        <= int(index_text)
-                        < config.start_index + config.max_count
-                        and doc_type_for(int(index_text), config.doc_types) == doc_type
-                    ):
-                        raise FileExistsError(f"fichier cible existant : {path}")
+    # Vérifie tous les chemins potentiels avant toute publication, y compris en mode total.
+    indices = range(
+        config.start_index, config.start_index + (config.max_count if total_mode else config.count)
+    )
+    for index in indices:
+        doc_type = doc_type_for(index, config.doc_types)
+        path = config.out_dir / _relative_path(
+            config.medium, doc_id_for(index), doc_type, renderer.extension, index, config.shard_size
+        )
+        if path.parent.is_symlink():
+            raise ValueError(f"le sous-dossier ne doit pas être un lien symbolique : {path.parent}")
+        if total_mode and present(path):
+            raise FileExistsError(f"fichier cible existant : {path}")
     image_base = _image_base(config)
     base_options = RenderOptions(logo=config.logo, signature=config.signature, image=image_base)
     # Un seul rendu conservé : les précontrôles de grands lots restent bornés en mémoire.
@@ -633,7 +707,7 @@ def _run_batch(config: BatchConfig) -> Iterator[dict]:
 
     publish(manifest_path, b"", replace=False)
     manifest = manifest_path.open("r+b", buffering=0)
-    records: list[dict] = []
+    records = _RecordStats()
     try:
 
         def documents():
@@ -655,25 +729,74 @@ def _run_batch(config: BatchConfig) -> Iterator[dict]:
                     item,
                     config.out_dir
                     / _relative_path(
-                        config.medium, doc_id_for(index), doc_type, renderer.extension
+                        config.medium,
+                        doc_id_for(index),
+                        doc_type,
+                        renderer.extension,
+                        index,
+                        config.shard_size,
                     ),
                 )
 
+        def rendered_documents():
+            if config.jobs == 1:
+                for item, target in documents():
+                    document, seed = build(item)
+                    options = scan_options if item.scan else native_options
+                    if (
+                        not item.scan
+                        and native_options == base_options
+                        and fitted_render is not None
+                        and fitted_render[0] == item
+                    ):
+                        rendered = fitted_render[1]
+                    else:
+                        rendered = renderer.render(
+                            document, config.profile, doc_id_for(item.index), options
+                        )
+                    yield item, target, options, document, seed, rendered
+                return
+            executor = ProcessPoolExecutor(
+                max_workers=config.jobs, mp_context=multiprocessing.get_context("spawn")
+            )
+            pending = deque()
+            source = iter(documents())
+            try:
+
+                def submit_one():
+                    try:
+                        item, target = next(source)
+                    except StopIteration:
+                        return False
+                    options = scan_options if item.scan else native_options
+                    pending.append(
+                        (
+                            item,
+                            target,
+                            options,
+                            executor.submit(_render_worker, config, item, options),
+                        )
+                    )
+                    return True
+
+                for _ in range(config.jobs):
+                    if not submit_one():
+                        break
+                while pending:
+                    item, target, options, future = pending.popleft()
+                    document, seed, rendered = future.result()
+                    yield item, target, options, document, seed, rendered
+                    submit_one()
+            finally:
+                executor.shutdown(wait=True, cancel_futures=True)
+
         total_bytes = 0
-        for item, target in documents():
-            document, seed = build(item)
-            options = scan_options if item.scan else native_options
-            if (
-                not item.scan
-                and native_options == base_options
-                and fitted_render is not None
-                and fitted_render[0] == item
-            ):
-                rendered = fitted_render[1]
-            else:
-                rendered = renderer.render(
-                    document, config.profile, doc_id_for(item.index), options
+        for item, target, options, document, seed, rendered in rendered_documents():
+            if target.parent.is_symlink():
+                raise ValueError(
+                    f"le sous-dossier ne doit pas être un lien symbolique : {target.parent}"
                 )
+            target.parent.mkdir(parents=True, exist_ok=True)
             record = _manifest_record(
                 index=item.index,
                 base_seed=config.base_seed,
