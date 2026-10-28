@@ -103,6 +103,8 @@ FACILITIES = (
     "Institut Synthétique de Port-Synthèse",
     "Hôpital Exemple de Lorvaux",
 )
+ADULT_AGE = 18
+GERIATRIC_AGE = 65
 SERVICES = ("Médecine interne", "Cardiologie", "Pneumologie", "Endocrinologie", "Gériatrie")
 
 
@@ -123,6 +125,25 @@ class Person:
     @property
     def civility(self) -> str:
         return "Madame" if self.sex == "F" else "Monsieur"
+
+    @property
+    def is_female(self) -> bool:
+        return self.sex == "F"
+
+    def agree(self, masculine: str, feminine_suffix: str = "e") -> str:
+        """Accord en genre : ``reçu`` / ``reçue`` (``feminine_suffix`` ajouté au féminin)."""
+        return masculine + (feminine_suffix if self.is_female else "")
+
+    def patient_noun(self, age: int) -> str:
+        """« patient » / « patiente », précédé de « jeune » pour un mineur."""
+        base = "patiente" if self.is_female else "patient"
+        return f"jeune {base}" if age < ADULT_AGE else base
+
+    def patient_ref(self, age: int, *, capitalize: bool = False) -> str:
+        """Groupe nominal « le patient » / « la patiente » / « le jeune patient »..."""
+        article = "la" if self.is_female else "le"
+        ref = f"{article} {self.patient_noun(age)}"
+        return ref.capitalize() if capitalize else ref
 
     def age_on(self, day: dt.date) -> int:
         years = day.year - self.birth_date.year

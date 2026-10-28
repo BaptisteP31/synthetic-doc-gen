@@ -6,6 +6,7 @@ import random
 from dataclasses import dataclass
 
 from synthetic_doc_gen.fictional import (
+    ADULT_AGE,
     FACILITIES,
     document_date,
     fmt_date,
@@ -26,20 +27,28 @@ class Analyte:
     low: float
     high: float
     decimals: int
+    #: Bornes propres aux femmes quand elles diffèrent ; ``low``/``high`` valent alors pour
+    #: les hommes.
+    female: tuple[float, float] | None = None
+
+    def bounds(self, sex: str) -> tuple[float, float]:
+        if sex == "F" and self.female is not None:
+            return self.female
+        return self.low, self.high
 
 
 # Valeurs de référence génériques, de démonstration uniquement.
 CATALOG: tuple[Analyte, ...] = (
-    Analyte("Hématologie (NFS)", "Hémoglobine", "g/dL", 12.0, 17.0, 1),
-    Analyte("Hématologie (NFS)", "Hématies", "T/L", 4.0, 5.8, 2),
-    Analyte("Hématologie (NFS)", "Hématocrite", "%", 37.0, 51.0, 1),
+    Analyte("Hématologie (NFS)", "Hémoglobine", "g/dL", 13.0, 17.0, 1, (12.0, 16.0)),
+    Analyte("Hématologie (NFS)", "Hématies", "T/L", 4.5, 5.8, 2, (4.0, 5.2)),
+    Analyte("Hématologie (NFS)", "Hématocrite", "%", 40.0, 51.0, 1, (36.0, 47.0)),
     Analyte("Hématologie (NFS)", "VGM", "fL", 80.0, 100.0, 1),
     Analyte("Hématologie (NFS)", "Leucocytes", "G/L", 4.0, 10.0, 2),
     Analyte("Hématologie (NFS)", "Polynucléaires neutrophiles", "G/L", 1.8, 7.5, 2),
     Analyte("Hématologie (NFS)", "Lymphocytes", "G/L", 1.0, 4.0, 2),
     Analyte("Hématologie (NFS)", "Plaquettes", "G/L", 150.0, 400.0, 0),
     Analyte("Biochimie", "Glycémie à jeun", "g/L", 0.70, 1.10, 2),
-    Analyte("Biochimie", "Créatinine", "µmol/L", 45.0, 105.0, 0),
+    Analyte("Biochimie", "Créatinine", "µmol/L", 60.0, 105.0, 0, (45.0, 90.0)),
     Analyte("Biochimie", "Urée", "mmol/L", 2.5, 8.0, 1),
     Analyte("Biochimie", "Sodium", "mmol/L", 136.0, 145.0, 0),
     Analyte("Biochimie", "Potassium", "mmol/L", 3.5, 5.1, 1),
@@ -49,7 +58,7 @@ CATALOG: tuple[Analyte, ...] = (
     Analyte("Biochimie", "ASAT", "UI/L", 10.0, 40.0, 0),
     Analyte("Biochimie", "ALAT", "UI/L", 7.0, 45.0, 0),
     Analyte("Inflammation", "CRP", "mg/L", 0.0, 5.0, 1),
-    Analyte("Inflammation", "Ferritine", "µg/L", 30.0, 300.0, 0),
+    Analyte("Inflammation", "Ferritine", "µg/L", 30.0, 300.0, 0, (15.0, 200.0)),
     Analyte("Inflammation", "Vitesse de sédimentation (1 h)", "mm", 2.0, 20.0, 0),
 )
 
@@ -58,20 +67,22 @@ def _fmt(value: float, decimals: int) -> str:
     return f"{value:.{decimals}f}".replace(".", ",")
 
 
-def draw_result(rng: random.Random, analyte: Analyte) -> float:
-    span = analyte.high - analyte.low
+def draw_result(rng: random.Random, analyte: Analyte, sex: str) -> float:
+    low, high = analyte.bounds(sex)
+    span = high - low
     if rng.random() < P_ABNORMAL:
         excess = span * (0.05 + rng.random() * 0.45)
-        value = analyte.high + excess if rng.random() < 0.5 else analyte.low - excess
+        value = high + excess if rng.random() < 0.5 else low - excess
     else:
-        value = analyte.low + rng.random() * span
+        value = low + rng.random() * span
     return max(0.0, value)
 
 
-def flag_for(analyte: Analyte, shown_value: float) -> str:
-    if shown_value > analyte.high:
+def flag_for(analyte: Analyte, shown_value: float, sex: str) -> str:
+    low, high = analyte.bounds(sex)
+    if shown_value > high:
         return "H"
-    if shown_value < analyte.low:
+    if shown_value < low:
         return "B"
     return ""
 
@@ -82,6 +93,7 @@ def generate_lab_report(rng: random.Random, profile: Profile) -> Document:
     biologist = make_practitioner(rng)
     facility = rng.choice([f for f in FACILITIES if "Laboratoire" in f or "Centre" in f])
     day = document_date(rng)
+    age = person.age_on(day)
     sample_id = f"SYN-ECH-{rng.randrange(10**8):08d}"
 
     n_rows = rng.randint(*profile.lab_rows)
@@ -90,7 +102,7 @@ def generate_lab_report(rng: random.Random, profile: Profile) -> Document:
         KeyValues(
             (
                 ("Patient", person.full_name),
-                ("Date de naissance", fmt_date(person.birth_date)),
+                ("Date de naissance", f"{fmt_date(person.birth_date)} ({age} ans)"),
                 ("Sexe", person.sex),
                 ("Identifiant patient", person.patient_id),
                 ("N° d'échantillon", sample_id),
@@ -125,17 +137,18 @@ def generate_lab_report(rng: random.Random, profile: Profile) -> Document:
             blocks.append(Heading(analyte.panel, level=2))
             current_panel = analyte.panel
         # Le drapeau est calculé sur la valeur arrondie, telle qu'affichée.
-        shown = round(draw_result(rng, analyte), analyte.decimals)
-        flag = flag_for(analyte, shown)
+        shown = round(draw_result(rng, analyte, person.sex), analyte.decimals)
+        flag = flag_for(analyte, shown, person.sex)
         if flag:
             n_abnormal += 1
             emphasized.add(len(rows))
+        low, high = analyte.bounds(person.sex)
         rows.append(
             (
                 analyte.name,
                 _fmt(shown, analyte.decimals),
                 analyte.unit,
-                f"{_fmt(analyte.low, analyte.decimals)} - {_fmt(analyte.high, analyte.decimals)}",
+                f"{_fmt(low, analyte.decimals)} - {_fmt(high, analyte.decimals)}",
                 flag,
             )
         )
@@ -148,6 +161,13 @@ def generate_lab_report(rng: random.Random, profile: Profile) -> Document:
             "et ne doit servir à aucune interprétation clinique."
         )
     )
+    if age < ADULT_AGE:
+        blocks.append(
+            Paragraph(
+                "Patient mineur : valeurs de référence adultes données à titre indicatif, "
+                "à interpréter selon les normes pédiatriques."
+            )
+        )
     blocks.append(Paragraph(f"Validé par {biologist} (biologiste fictif)."))
 
     return Document(
