@@ -82,7 +82,9 @@ Avec `--target-size`, les réglages sont calibrés une fois sur les premiers
 Si nécessaire, un premier scan ou PDF natif accessible dans la fenêtre est ajouté à
 l'échantillon. La moyenne cible utilise la proportion de scans de toute la fenêtre
 `[start-index, start-index + max-count)`, qui peut différer de celle du lot effectivement
-produit : la taille moyenne finale reste une estimation. Si aucun scan n'est accessible,
+produit. La proportion de PDF natifs à images est elle aussi calculée sur cette fenêtre :
+dans un lot mixte, sa composition réelle peut différer et la moyenne finale manquer la cible,
+même si la calibration estimait celle-ci atteignable. Si aucun scan n'est accessible,
 un avertissement le signale. Le préflight parcourt cette fenêtre en temps proportionnel à
 `--max-count` ; une limite très grande peut donc ralentir le démarrage, même si peu de
 fichiers sont produits. Les options de pages, couleur, résolution et qualité s'appliquent
@@ -155,6 +157,8 @@ doivent aussi être identiques.
 natifs/scans/documents à images, proportion effective), réglages de scan (`scan_settings`) et
 d'image (`image_settings`, avec versions de Pillow, libjpeg et FreeType) retenus, bloc `target`
 (écart, `reached`, réglages ajustés dont `image_dpi` / `image_jpeg_quality`) et avertissements.
+`measured.with_images` compte les documents dont la source contient des images, scans compris ;
+`measured.native_with_images` compte uniquement les PDF natifs avec images incorporées.
 La cible n'est pas atteinte, avec avertissement, si l'écart mesuré dépasse la tolérance ou si les
 plages réalistes ne suffisent pas (ex. 20 ko pour des comptes rendus d'imagerie : le minimum
 est ≈ 70 ko à 100 dpi, qualité 40). En Python, `run_batch` est un générateur dont la valeur de
@@ -231,8 +235,10 @@ Une ligne JSON (clés triées) par document :
 
 `render.kind` vaut `native` ou `scan` ; pour un scan, `render.scan` donne dpi, couleur, qualité
 JPEG et version de pdfium ; pour un document à images, `render.images` donne nombre d'images,
-dpi, format, qualité JPEG et versions de Pillow, libjpeg et FreeType (champs ajoutés sans changer
-`schema_version`). `entities` contient la vérité terrain fictive (nom, date de naissance, identifiants, date,
+dpi, format, qualité JPEG et versions de Pillow, libjpeg et FreeType. Pour un scan, ces paramètres
+décrivent les images du PDF source avant rastérisation : le fichier final contient une image de
+page par page, réglée par `render.scan`. Ces champs sont ajoutés sans changer
+`schema_version`. `entities` contient la vérité terrain fictive (nom, date de naissance, identifiants, date,
 praticien, nombre de résultats anormaux…), utile pour évaluer une extraction ou une
 anonymisation. Les `path` sont relatifs au dossier de sortie.
 

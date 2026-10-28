@@ -109,6 +109,27 @@ def test_unknown_modality_and_invalid_settings():
             ImageSettings(**bad)
 
 
+@pytest.mark.parametrize("filler_units", [0, 1, 3])
+def test_comparison_matches_prior_exams(filler_units):
+    from synthetic_doc_gen.model import Heading, Paragraph
+
+    document, _ = build_document(0, 3, IMAGING, get_profile("standard"), filler_units)
+    paragraphs = [block.text for block in document.blocks if isinstance(block, Paragraph)]
+    headings = [block.text for block in document.blocks if isinstance(block, Heading)]
+    assert ("Aucun examen antérieur n'est disponible pour comparaison." in paragraphs) == (
+        filler_units == 0
+    )
+    assert sum(text.startswith("Examen antérieur du ") for text in headings) == filler_units
+
+
+def test_report_distinguishes_source_images_from_native_images(make_config):
+    config = make_config(count=2, doc_types=(IMAGING,), scan_ratio=0.5, scan_dpi=100)
+    records, report = _run(config)
+    assert all(record["render"]["images"] for record in records)
+    assert report["measured"]["with_images"]["documents"] == 2
+    assert report["measured"]["native_with_images"]["documents"] == 1
+
+
 def test_exact_pages_and_scan_of_imaging_report(make_config):
     config = make_config(
         count=2,

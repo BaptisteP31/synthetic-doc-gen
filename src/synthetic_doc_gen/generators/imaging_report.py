@@ -303,7 +303,11 @@ def generate_imaging_report(
         Heading("Résultats"),
         *(Paragraph(f"{organ} : {text}.") for organ, text in findings),
         Heading("Comparaison"),
-        Paragraph("Aucun examen antérieur n'est disponible pour comparaison."),
+        Paragraph(
+            "Les examens antérieurs disponibles figurent ci-dessous."
+            if filler_units
+            else "Aucun examen antérieur n'est disponible pour comparaison."
+        ),
     ]
     compare_at = len(blocks)
     blocks += [Heading("Conclusion"), Paragraph(f"{conclusion[0].upper()}{conclusion[1:]}.")]
@@ -311,7 +315,7 @@ def generate_imaging_report(
     blocks.append(Paragraph(f"Fait à titre de démonstration, {radiologist} (praticien fictif)."))
 
     if filler_units:
-        # Tirés en dernier : le contenu de base reste identique avec ou sans examens antérieurs.
+        # Tirés en dernier pour préserver le contenu et les images du compte rendu.
         notes = prior_exam_notes(
             random.Random(rng.getrandbits(64)), exam, day, radiologist, filler_units
         )

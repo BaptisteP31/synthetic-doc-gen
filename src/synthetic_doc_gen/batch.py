@@ -288,13 +288,15 @@ class _Stats:
 
 class _RecordStats:
     def __init__(self):
-        self.groups = [_Stats() for _ in range(4)]
+        self.groups = [_Stats() for _ in range(5)]
 
     def append(self, record):
         self.groups[0].add(record)
         self.groups[1 if record["render"]["kind"] == "native" else 2].add(record)
         if record["images"]:
             self.groups[3].add(record)
+            if record["render"]["kind"] == "native":
+                self.groups[4].add(record)
 
 
 def build_report(
@@ -316,12 +318,17 @@ def build_report(
         }
 
     if isinstance(records, _RecordStats):
-        measured, native, scanned, imaged = (group.result() for group in records.groups)
+        measured, native, scanned, imaged, native_imaged = (
+            group.result() for group in records.groups
+        )
         count = measured["documents"]
     else:
         native = stats([r for r in records if r["render"]["kind"] == "native"])
         scanned = stats([r for r in records if r["render"]["kind"] == "scan"])
         imaged = stats([r for r in records if r["images"]])
+        native_imaged = stats(
+            [r for r in records if r["images"] and r["render"]["kind"] == "native"]
+        )
         measured = stats(records)
         count = len(records)
     warnings = list(calibration.warnings) if calibration else []
@@ -384,6 +391,7 @@ def build_report(
                 "native": native,
                 "scan": scanned,
                 "with_images": imaged,
+                "native_with_images": native_imaged,
                 "scan_ratio": round(scanned["documents"] / count, 4) if count else None,
             },
             "scan_settings": _scan_description(_final_settings(config, calibration))
