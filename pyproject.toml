@@ -4,7 +4,10 @@ version = "0.1.0"
 description = "Générateur de documents médicaux entièrement fictifs (PDF) pour tests, marqués DOCUMENT SYNTHÉTIQUE TEST."
 readme = "README.md"
 requires-python = ">=3.11"
-dependencies = ["reportlab>=4.0"]
+dependencies = [
+    "pypdfium2>=5.14.0",
+    "reportlab>=4.0",
+]
 
 [project.scripts]
 synthetic-doc-gen = "synthetic_doc_gen.cli:main"

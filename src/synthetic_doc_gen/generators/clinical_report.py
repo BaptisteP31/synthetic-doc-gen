@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import datetime as dt
 import random
 from dataclasses import dataclass
 
@@ -200,7 +201,50 @@ def vitals_text(rng: random.Random, age: int) -> str:
     )
 
 
-def generate_clinical_report(rng: random.Random, profile: Profile) -> Document:
+def _years_after(day: dt.date, years: int) -> dt.date:
+    try:
+        return day.replace(year=day.year + years)
+    except ValueError:  # 29 février
+        return day.replace(year=day.year + years, day=28)
+
+
+def followup_notes(
+    rng: random.Random, person: Person, spec: Specialty, day: dt.date, count: int
+) -> list:
+    """Notes de suivi antérieures (de la plus récente à la plus ancienne), tirées à la suite.
+
+    La note ``i`` ne dépend pas de ``count`` : ajouter des notes n'altère pas les précédentes.
+    Chaque note est cohérente avec l'âge du patient à sa propre date.
+    """
+    notes: list = []
+    note_day = day
+    earliest = _years_after(person.birth_date, spec.min_age)
+    for _ in range(count):
+        note_day = max(note_day - dt.timedelta(days=rng.randint(7, 60)), earliest)
+        age = person.age_on(note_day)
+        fmt = {
+            "Patient": person.patient_ref(age, capitalize=True),
+            "patient": person.patient_ref(age),
+        }
+        doses = (125, 250, 500) if age < ADULT_AGE else (250, 500, 1000)
+        notes += [
+            Heading(f"Note de suivi du {fmt_date(note_day)}", level=2),
+            Paragraph(
+                f"Motif : {choose(rng, spec.motifs, person, age)}. "
+                f"{vitals_text(rng, age)} {choose(rng, spec.exams, person, age).capitalize()}."
+            ),
+            Paragraph(rng.choice(EXTRA).format(**fmt)),
+            Paragraph(
+                f"Poursuite du traitement par Placebomol {rng.choice(doses)} mg "
+                f"(médicament fictif). Contrôle clinique dans {rng.choice((1, 3, 6))} mois."
+            ),
+        ]
+    return notes
+
+
+def generate_clinical_report(
+    rng: random.Random, profile: Profile, filler_units: int = 0
+) -> Document:
     person = make_person(rng)
     doctor = make_practitioner(rng)
     day = document_date(rng)
@@ -255,6 +299,7 @@ def generate_clinical_report(rng: random.Random, profile: Profile) -> Document:
     }
     for text in extra:
         blocks.append(Paragraph(text.format(**fmt)))
+    notes_at = len(blocks)
     blocks += [
         Heading("Conclusion"),
         Paragraph(f"{conclusion.capitalize()}."),
@@ -265,6 +310,11 @@ def generate_clinical_report(rng: random.Random, profile: Profile) -> Document:
         ),
         Paragraph(f"Fait à titre de démonstration, {doctor} (praticien fictif)."),
     ]
+
+    if filler_units:
+        # Tirées en dernier : le contenu de base reste identique avec ou sans notes de suivi.
+        notes = followup_notes(random.Random(rng.getrandbits(64)), person, spec, day, filler_units)
+        blocks[notes_at:notes_at] = notes
 
     return Document(
         doc_type="compte-rendu",
@@ -280,4 +330,5 @@ def generate_clinical_report(rng: random.Random, profile: Profile) -> Document:
             "practitioner": doctor,
             "service": spec.service,
         },
+        signer=doctor,
     )

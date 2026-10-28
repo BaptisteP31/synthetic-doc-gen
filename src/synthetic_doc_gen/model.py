@@ -47,3 +47,5 @@ class Document:
     blocks: tuple[Block, ...]
     #: Vérité terrain fictive (nom, identifiants...), reprise dans le manifeste.
     entities: dict[str, str] = field(default_factory=dict)
+    #: Praticien fictif qui « signe » le document (signature optionnelle au rendu).
+    signer: str = ""

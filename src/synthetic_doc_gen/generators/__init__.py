@@ -2,15 +2,15 @@
 
 from __future__ import annotations
 
-import random
 from collections.abc import Callable
 
 from synthetic_doc_gen.generators.clinical_report import generate_clinical_report
 from synthetic_doc_gen.generators.lab_report import generate_lab_report
 from synthetic_doc_gen.model import Document
-from synthetic_doc_gen.profiles import Profile
 
-Generator = Callable[[random.Random, Profile], Document]
+#: ``filler_units`` : unités de contenu complémentaires (notes, historique) pour allonger le
+#: document sans modifier son contenu de base.
+Generator = Callable[..., Document]
 
 GENERATORS: dict[str, Generator] = {
     "compte-rendu": generate_clinical_report,

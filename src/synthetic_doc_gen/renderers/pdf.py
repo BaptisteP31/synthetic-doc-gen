@@ -28,8 +28,10 @@ from reportlab.platypus import (
 )
 
 from synthetic_doc_gen import SYNTHETIC_MARKER, __version__, model
+from synthetic_doc_gen.options import RenderOptions
 from synthetic_doc_gen.profiles import Profile
-from synthetic_doc_gen.renderers import Rendered
+from synthetic_doc_gen.renderers import Rendered, scan
+from synthetic_doc_gen.renderers.artwork import FictionalLogo, FictionalSignature
 
 PAGE_SIZES = {"A4": A4, "LETTER": LETTER}
 DISCLAIMER = "Données entièrement fictives - aucun patient réel - ne pas utiliser en pratique"
@@ -165,9 +167,14 @@ def _table(block: model.Table, profile: Profile, styles, width: float) -> Table:
     return table
 
 
-def _flowables(document: model.Document, profile: Profile, width: float) -> list[Flowable]:
+def _flowables(
+    document: model.Document, profile: Profile, width: float, options: RenderOptions
+) -> list[Flowable]:
     styles = _styles(profile)
-    out: list[Flowable] = [_p(document.title, styles["title"])]
+    out: list[Flowable] = []
+    if options.logo:
+        out += [FictionalLogo(document.issuer, profile.accent_color), Spacer(1, 6)]
+    out.append(_p(document.title, styles["title"]))
     for block in document.blocks:
         if isinstance(block, model.Heading):
             out.append(_p(block.text, styles["h1" if block.level == 1 else "h2"]))
@@ -202,6 +209,10 @@ def _flowables(document: model.Document, profile: Profile, width: float) -> list
             out += [_table(block, profile, styles, width), Spacer(1, 6)]
         else:  # pragma: no cover - garde pour les futurs blocs
             raise TypeError(f"bloc non pris en charge : {type(block).__name__}")
+    if options.signature and document.signer:
+        # Solidaire du dernier élément : la signature ne se retrouve pas seule sur une page.
+        last = out.pop()
+        out.append(KeepTogether([last, Spacer(1, 10), FictionalSignature(document.signer)]))
     return out
 
 
@@ -233,7 +244,36 @@ class ReportLabPdfRenderer:
     def version(self) -> str:
         return reportlab.Version
 
-    def render(self, document: model.Document, profile: Profile, doc_id: str) -> Rendered:
+    def render(
+        self,
+        document: model.Document,
+        profile: Profile,
+        doc_id: str,
+        options: RenderOptions | None = None,
+    ) -> Rendered:
+        """PDF natif, ou PDF image seule si ``options.scan`` est défini."""
+        options = options or RenderOptions()
+        native = self.render_native(document, profile, doc_id, options)
+        if options.scan is None:
+            return native
+        data, pages = scan.scan_pdf(
+            native.data,
+            options.scan,
+            title=f"{SYNTHETIC_MARKER} - {document.title} (scan)",
+            subject=f"{SYNTHETIC_MARKER} - {document.doc_type}",
+            keywords=f"synthetic, test, fictional, scan, {document.doc_type}",
+            creator=f"synthetic-doc-gen {__version__}",
+        )
+        return Rendered(data=data, pages=pages)
+
+    def render_native(
+        self,
+        document: model.Document,
+        profile: Profile,
+        doc_id: str,
+        options: RenderOptions | None = None,
+    ) -> Rendered:
+        options = options or RenderOptions()
         pagesize = PAGE_SIZES[profile.page_size]
         margin = profile.margin_mm * mm
         buffer = io.BytesIO()
@@ -256,7 +296,7 @@ class ReportLabPdfRenderer:
             _decorate_page, issuer=document.issuer, accent=profile.accent_color
         )
         doc.build(
-            _flowables(document, profile, pagesize[0] - 2 * margin),
+            _flowables(document, profile, pagesize[0] - 2 * margin, options),
             onFirstPage=decorate,
             onLaterPages=decorate,
             canvasmaker=functools.partial(

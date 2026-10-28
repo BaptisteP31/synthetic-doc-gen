@@ -30,6 +30,11 @@ uv run synthetic-doc-gen generate -o out2 -n 5 -t bilan-biologique -p compact
 
 # régénérer uniquement les documents 100 à 109 du même lot
 uv run synthetic-doc-gen generate -o out3 -n 10 -s 42 --start-index 100
+
+# corpus mixte : 30 % de scans (images seules, 200 dpi, gris), 2 à 5 pages, logo et signature
+# fictifs, taille moyenne visée 250 ko par fichier
+uv run synthetic-doc-gen generate -o out4 -n 50 -s 42 --scan-ratio 30% --pages 2-5 \
+    --scan-color gray --logo --signature --target-size 250k
 ```
 
 Options de `generate` : `-o/--out` (obligatoire), `-n/--count` (10), `-s/--seed` (0),
@@ -49,11 +54,54 @@ Sortie :
 ```
 out/
 ├── manifest.jsonl
+├── report.json
 └── pdf/
     ├── SYN-000000_compte-rendu.pdf
     ├── SYN-000001_bilan-biologique.pdf
     └── …
 ```
+
+### PDF natifs, scans, pages, taille cible
+
+Tout se règle à l'appel (options de `generate`, ou champs de `BatchConfig` en Python) ; sans
+ces options, les fichiers sont identiques, octet pour octet, à ceux des versions précédentes.
+
+| Option | Effet |
+|--------|-------|
+| `--scan-ratio R` | proportion de **scans** (`0.3` ou `30%`, défaut 0). Un scan est un PDF *image seule* : une image par page, aucun texte extractible, comme une numérisation non océrisée. Les autres sont des PDF **natifs** (texte sélectionnable). |
+| `--pages N` ou `A-B` | nombre de pages **exact** par document (1-50) ; avec `A-B`, tirage par document, reproductible. Défaut : longueur du profil. |
+| `--scan-dpi`, `--scan-color`, `--scan-quality` | résolution (72-600, défaut 150), `color`/`gray`/`bw` (défaut `color`), qualité JPEG 1-95 (défaut 75 ; sans effet en `bw`, compressé sans perte). |
+| `--logo`, `--signature` | logo d'établissement et signature manuscrite **fictifs**, dessinés en vectoriel (légendés « LOGO FICTIF » / « signature fictive »). Présents aussi dans les scans. |
+| `--target-size T` | taille moyenne visée par fichier (`250k`, `1.5M` ; k = 1000 octets), voir ci-dessous. `--target-tolerance` : écart toléré (défaut 10 %). |
+
+**Répartition natifs / scans.** Déterministe : la décision ne dépend que de l'index, des types
+et de la proportion, avec une répartition régulière dans chaque type (pas de corrélation avec la
+rotation des types). Un sous-lot (`--start-index`) retrouve les mêmes choix ; le nombre de scans
+est à un document près de `n × R`.
+
+**Nombre de pages.** Le contenu de base du document est inchangé ; on y ajoute du contenu réel
+(notes de suivi datées pour un compte rendu, bilans antérieurs pour un bilan biologique,
+cohérents avec l'âge et le sexe du patient) jusqu'à obtenir *exactement* le nombre de pages,
+mesuré sur le rendu. Les `entities` du manifeste décrivent le document principal. Si le contenu
+de base dépasse déjà la cible (ex. 1 page avec un profil très dense, un logo et une signature),
+la génération échoue **avant toute écriture**.
+
+**Taille moyenne cible (au mieux, sans remplissage).** Aucun octet inutile n'est ajouté. Le
+poids d'un PDF natif vient de son contenu (≈ 3-5 ko par page) ; seul celui des scans se règle,
+par la résolution puis, en butée, la qualité JPEG, dans des plages réalistes (100-400 dpi,
+qualité 40-95). Le réglage est calculé avant toute écriture, sur un échantillon de pages
+réellement rendues, en déduisant la contribution mesurée des natifs ; les réglages imposés
+(`--scan-dpi`, `--scan-quality`) ne sont jamais modifiés. La moyenne **réelle** est ensuite
+mesurée sur les fichiers écrits (`report.json`, résumé en fin de commande) ; si elle s'écarte de
+la cible au-delà de la tolérance, ou si la cible est hors de portée (aucun scan, réglages
+imposés, limites réalistes), un **avertissement** est affiché sur stderr et consigné dans le
+rapport (`warnings`), sans échec de la commande. Pour une cible plus haute, augmenter la
+proportion de scans ou le nombre de pages.
+
+`report.json` : paramètres demandés, mesures (total, moyenne, min/max, pages, ventilation
+natifs/scans, proportion effective), réglages de scan retenus, bloc `target` (écart, `reached`,
+réglages ajustés) et avertissements. En Python, `run_batch` est un générateur dont la valeur de
+retour (`StopIteration.value`) est ce rapport.
 
 ### Types de documents
 
@@ -85,8 +133,10 @@ Le contenu est donc une fonction pure de *(graine de lot, index, type, profil)* 
 permet de régénérer un sous-ensemble à l'identique. Le moteur PDF utilise `invariant=1` de
 ReportLab (dates et identifiants internes figés).
 
-**Garantie** : même entrées + même environnement (versions de Python et de ReportLab) ⇒ même
-fichier, octet pour octet (vérifié par les tests). **Pas de promesse d'identité binaire
+**Garantie** : même entrées + même environnement (versions de Python, ReportLab et, pour les
+scans, pdfium et Pillow/libjpeg) ⇒ même fichier, octet pour octet (vérifié par les tests). La
+proportion de scans, le nombre de pages tiré par document et les réglages ajustés par la taille
+cible sont eux aussi déterministes ; les entrées incluent donc ces options. **Pas de promesse d'identité binaire
 inter-plateformes ou inter-versions** : le contenu logique comme les octets peuvent changer selon les versions du logiciel ou de ses
 dépendances, de Python ou la plateforme. Le manifeste enregistre les versions utilisées.
 
@@ -102,10 +152,13 @@ Une ligne JSON (clés triées) par document :
  "language": "fr", "synthetic": true, "marker": "DOCUMENT SYNTHÉTIQUE TEST",
  "generator": {"name": "synthetic-doc-gen", "version": "0.1.0"},
  "renderer": {"name": "reportlab", "version": "5.1.0"},
+ "render": {"kind": "native", "logo": false, "signature": false, "pages_requested": null,
+            "scan": null},
  "entities": {"patient_name": "…", "birth_date": "…", "patient_id": "SYN-PAT-…", "…": "…"}}
 ```
 
-`entities` contient la vérité terrain fictive (nom, date de naissance, identifiants, date,
+`render.kind` vaut `native` ou `scan` ; pour un scan, `render.scan` donne dpi, couleur, qualité
+JPEG et version de pdfium (champs ajoutés sans changer `schema_version`). `entities` contient la vérité terrain fictive (nom, date de naissance, identifiants, date,
 praticien, nombre de résultats anormaux…), utile pour évaluer une extraction ou une
 anonymisation. Les `path` sont relatifs au dossier de sortie.
 
@@ -116,7 +169,11 @@ src/synthetic_doc_gen/
 ├── model.py        # Document = suite de blocs neutres (Heading, Paragraph, KeyValues, Table)
 ├── fictional.py    # personnes, praticiens, établissements fictifs
 ├── generators/     # un module par type de document : (rng, profil) -> Document
-├── renderers/      # un moteur par média : Document -> octets (pdf.py = ReportLab)
+├── renderers/      # un moteur par média : Document -> octets (pdf.py = ReportLab,
+│                   #   scan.py = rastérisation pdfium -> PDF image seule, artwork.py = logo/signature)
+├── options.py      # réglages de scan, logo, signature, bornes réalistes
+├── pagination.py   # ajustement exact du nombre de pages par contenu réel
+├── sizing.py       # réglage dpi/qualité des scans pour la taille moyenne cible
 ├── profiles.py     # profils nommés
 ├── seeding.py      # graine par document
 ├── batch.py        # lot + manifeste
@@ -130,6 +187,16 @@ Contenu (générateurs) et forme (moteurs de rendu) sont séparés :
   (`name`, `extension`, `version()`, `render(document, profile, doc_id)`) et l'inscrire dans
   `RENDERERS` ; l'option `--medium` et le manifeste suivent sans autre changement.
 
+## Données produites
+
+Tous les documents sont fictifs et marqués sur chaque page (image comprise pour les scans) et
+dans les métadonnées. Le générateur n'écrase ni ne supprime jamais de fichier existant (sauf
+`--force`, jamais sur un manifeste existant), publie chaque fichier de façon atomique, verrouille
+le dossier contre les générations simultanées et ne produit rien tant que les contrôles et le
+réglage de la taille cible ne sont pas passés (le réglage se fait en mémoire). Le dossier de
+sortie contient des données de test : le versionner ou le partager est une décision de
+l'utilisateur ; `output/` est ignoré par git, et les permissions des fichiers suivent l'umask.
+
 ## Développement
 
 ```bash
@@ -139,12 +206,23 @@ uv run ruff format --check .   # format
 ```
 
 Vérification visuelle : `pdftoppm -r 70 -png out/pdf/SYN-000000_compte-rendu.pdf page`.
+Vérifier qu'un scan n'a pas de texte : `pdftotext scan.pdf -` (vide) et `pdfimages -list scan.pdf`.
 
 ## Limites connues (v0.1)
 
 - Un seul moteur PDF (ReportLab), polices standard Helvetica non incorporées (jeu de caractères
   WinAnsi : pas de caractères hors latin-1/cp1252).
-- Rendu « propre » : pas de bruit de scan, rotation, tampons ou signatures manuscrites.
+- Scans « propres » : rastérisation fidèle du PDF natif, sans bruit, rotation, plis ni ombres
+  (le noir et blanc est une simple binarisation). Pas de tampon ; logo et signature sont
+  vectoriels et clairement fictifs.
+- Taille cible best effort : estimée sur un échantillon, mesurée ensuite ; les PDF natifs ne se
+  règlent pas (≈ 3-5 ko/page, polices non incorporées) et un lot sans scan ne peut pas approcher
+  une cible élevée. Le nombre de pages d'un scan est celui de son équivalent natif.
+- Pages : minimum selon profil et options (logo, signature) ; les pages ajoutées sont des notes
+  ou historiques fictifs répétitifs dans leur forme, destinés aux tests de volumétrie.
+- Les scans dépendent de pdfium (pypdfium2) : la rastérisation n'est pas garantie identique entre
+  versions ; la rastérisation et l'ajustement de taille ralentissent la génération (≈ 0,1-0,5 s
+  par page de scan).
 - Français uniquement ; gabarits de texte simples (5 spécialités, 21 analytes).
 - Les profils sont intégrés au code (pas de fichier de profil externe).
 - La reproductibilité des octets dépend de l'environnement (voir Déterminisme).

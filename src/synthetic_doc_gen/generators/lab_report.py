@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import datetime as dt
 import random
 from dataclasses import dataclass
 
 from synthetic_doc_gen.fictional import (
     ADULT_AGE,
     FACILITIES,
+    Person,
     document_date,
     fmt_date,
     make_person,
@@ -87,7 +89,54 @@ def flag_for(analyte: Analyte, shown_value: float, sex: str) -> str:
     return ""
 
 
-def generate_lab_report(rng: random.Random, profile: Profile) -> Document:
+def history_blocks(
+    rng: random.Random, person: Person, biologist: str, day: dt.date, count: int
+) -> list:
+    """Bilans antérieurs fictifs (du plus récent au plus ancien), tirés à la suite.
+
+    Le bilan ``i`` ne dépend pas de ``count``. Ils complètent le bilan principal : les
+    entités du manifeste (nombre de résultats, anormaux...) ne portent que sur celui-ci.
+    """
+    out: list = []
+    past = day
+    for _ in range(count):
+        past = max(past - dt.timedelta(days=rng.randint(30, 120)), person.birth_date)
+        picked = sorted(rng.sample(range(len(CATALOG)), rng.randint(8, 12)))
+        rows: list[tuple[str, ...]] = []
+        emphasized: set[int] = set()
+        for idx in picked:
+            analyte = CATALOG[idx]
+            shown = round(draw_result(rng, analyte, person.sex), analyte.decimals)
+            flag = flag_for(analyte, shown, person.sex)
+            if flag:
+                emphasized.add(len(rows))
+            low, high = analyte.bounds(person.sex)
+            rows.append(
+                (
+                    analyte.name,
+                    _fmt(shown, analyte.decimals),
+                    analyte.unit,
+                    f"{_fmt(low, analyte.decimals)} - {_fmt(high, analyte.decimals)}",
+                    flag,
+                )
+            )
+        out += [
+            Heading(f"Historique - prélèvement du {fmt_date(past)}", level=2),
+            Paragraph(
+                f"N° d'échantillon SYN-ECH-{rng.randrange(10**8):08d}. Résultats antérieurs "
+                f"fictifs, repris pour comparaison ({biologist}, biologiste fictif)."
+            ),
+            Table(
+                ("Analyse", "Résultat", "Unité", "Valeurs de référence", "Ind."),
+                tuple(rows),
+                col_weights=(4.0, 1.5, 1.4, 2.4, 0.8),
+                emphasized_rows=frozenset(emphasized),
+            ),
+        ]
+    return out
+
+
+def generate_lab_report(rng: random.Random, profile: Profile, filler_units: int = 0) -> Document:
     person = make_person(rng)
     prescriber = make_practitioner(rng)
     biologist = make_practitioner(rng)
@@ -171,7 +220,14 @@ def generate_lab_report(rng: random.Random, profile: Profile) -> Document:
                 "à interpréter selon les normes pédiatriques."
             )
         )
+    history_at = len(blocks)
     blocks.append(Paragraph(f"Validé par {biologist} (biologiste fictif)."))
+    if filler_units:
+        # Tirés en dernier : le bilan principal reste identique avec ou sans historique.
+        history = history_blocks(
+            random.Random(rng.getrandbits(64)), person, biologist, day, filler_units
+        )
+        blocks[history_at:history_at] = history
 
     return Document(
         doc_type="bilan-biologique",
@@ -188,4 +244,5 @@ def generate_lab_report(rng: random.Random, profile: Profile) -> Document:
             "n_results": str(len(picked)),
             "n_abnormal": str(n_abnormal),
         },
+        signer=biologist,
     )
