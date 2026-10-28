@@ -25,6 +25,9 @@ uv run synthetic-doc-gen list
 # 20 documents (alternance compte rendu / bilan biologique), graine de lot 42
 uv run synthetic-doc-gen generate -o out -n 20 -s 42
 
+# générer le premier préfixe atteignant au moins 10 Mo de PDF
+uv run synthetic-doc-gen generate -o out-volume --total-size 10M --max-count 5000 -s 42
+
 # bilans biologiques seuls, profil dense
 uv run synthetic-doc-gen generate -o out2 -n 5 -t bilan-biologique -p compact
 
@@ -60,6 +63,25 @@ out/
     ├── SYN-000001_bilan-biologique.pdf
     └── …
 ```
+
+### Volume total
+
+`--total-size` accepte les mêmes unités décimales que `--target-size` et exclut
+`--count`. La génération s'arrête au premier document dont la somme des tailles PDF atteint
+ou dépasse la cible : le dépassement peut atteindre la taille du dernier PDF. `report.json`
+contient `total_target` (volume demandé et obtenu, nombre de documents, écart absolu et relatif,
+indicateur `reached`) et `measured.scan_ratio` indique la proportion réelle de scans. La limite
+`--max-count` vaut 10 000 par défaut ; si elle est atteinte avant la cible, le rapport est écrit,
+un avertissement est affiché et la commande retourne le code 2.
+
+Avec `--target-size`, les réglages sont calibrés une fois sur les premiers
+`--calibration-count` documents (10 par défaut, maximum 100, limité par `--max-count`),
+indépendamment de la longueur finalement produite. Rejouer avec la même graine, les mêmes
+options, taille de calibration et environnement reproduit le lot ; les réglages retenus
+figurent dans le rapport. Les vérifications de paramètres et de fichiers existants précèdent la
+génération ; `--force` est interdit dans ce mode. Les pages demandées sont validées au fil de
+l'eau, sauf pour l'échantillon de calibration : une erreur ou interruption peut laisser un lot
+partiel avec son manifeste, sans rapport final. Aucun document déjà présent n'est modifié.
 
 ### PDF natifs, scans, pages, taille cible
 

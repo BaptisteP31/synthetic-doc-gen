@@ -75,7 +75,23 @@ def _build_parser() -> argparse.ArgumentParser:
 
     gen = sub.add_parser("generate", help="générer un lot de documents et son manifeste")
     gen.add_argument("-o", "--out", type=Path, required=True, help="dossier de sortie")
-    gen.add_argument("-n", "--count", type=int, default=10, help="nombre de documents (10)")
+    amount = gen.add_mutually_exclusive_group()
+    amount.add_argument("-n", "--count", type=int, help="nombre de documents (10 par défaut)")
+    amount.add_argument(
+        "--total-size",
+        type=_size,
+        metavar="TAILLE",
+        help="taille totale minimale des PDF (ex. 10M)",
+    )
+    gen.add_argument(
+        "--max-count", type=int, default=10000, help="limite de documents en mode total (10000)"
+    )
+    gen.add_argument(
+        "--calibration-count",
+        type=int,
+        default=10,
+        help="documents du lot de calibration en mode total (10)",
+    )
     gen.add_argument("-s", "--seed", type=int, default=0, help="graine du lot (0)")
     gen.add_argument(
         "-t",
@@ -148,7 +164,10 @@ def _cmd_generate(args: argparse.Namespace) -> int:
     doc_types = [t.strip() for t in args.types.split(",") if t.strip()]
     config = BatchConfig(
         out_dir=args.out,
-        count=args.count,
+        count=args.count if args.count is not None else 10,
+        total_size=args.total_size,
+        max_count=args.max_count,
+        calibration_count=args.calibration_count,
         base_seed=args.seed,
         doc_types=doc_types,
         profile=get_profile(args.profile),
@@ -188,7 +207,13 @@ def _cmd_generate(args: argparse.Namespace) -> int:
     print(f"{n} document(s) dans {args.out} ; manifeste : {args.out / MANIFEST_NAME}")
     if report is not None:
         _print_report(report, args.out / REPORT_NAME)
-    return 0
+    return (
+        2
+        if report is not None
+        and report.data["total_target"] is not None
+        and not report.data["total_target"]["reached"]
+        else 0
+    )
 
 
 def _print_report(report: BatchReport, path: Path) -> None:
@@ -199,6 +224,13 @@ def _print_report(report: BatchReport, path: Path) -> None:
             f"(min {measured['min_bytes']}, max {measured['max_bytes']}), "
             f"{measured['native']['documents']} natif(s), {measured['scan']['documents']} "
             f"scan(s), {measured['mean_pages']} page(s) en moyenne ; rapport : {path}"
+        )
+    total = report.data["total_target"]
+    if total is not None:
+        print(
+            f"volume : {total['obtained_bytes']} / {total['requested_bytes']} o ; "
+            f"{total['documents']} document(s), écart {total['deviation_bytes']:+} o "
+            f"({total['deviation']:+.1%}), scans {measured['scan_ratio']:.1%}"
         )
     target = report.data["target"]
     if target is not None and target["reached"]:

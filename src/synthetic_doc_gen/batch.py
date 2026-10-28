@@ -61,6 +61,9 @@ class BatchConfig:
     target_mean_bytes: int | None = None
     #: Écart relatif toléré entre moyenne mesurée et cible avant avertissement.
     target_tolerance: float = 0.10
+    total_size: int | None = None
+    max_count: int = 10000
+    calibration_count: int = 10
 
 
 @dataclass(frozen=True)
@@ -255,7 +258,12 @@ def build_report(
             "generator": {"name": "synthetic-doc-gen", "version": __version__},
             "base_seed": config.base_seed,
             "requested": {
-                "count": config.count,
+                "count": config.count if config.total_size is None else None,
+                "total_size": config.total_size,
+                "max_count": config.max_count if config.total_size is not None else None,
+                "calibration_count": config.calibration_count
+                if config.total_size is not None and config.target_mean_bytes is not None
+                else None,
                 "start_index": config.start_index,
                 "doc_types": list(config.doc_types),
                 "profile": json.loads(json.dumps(asdict(config.profile))),
@@ -280,6 +288,18 @@ def build_report(
             "scan_settings": _scan_description(_final_settings(config, calibration))
             if scanned
             else None,
+            "total_target": (
+                {
+                    "requested_bytes": config.total_size,
+                    "obtained_bytes": measured["total_bytes"],
+                    "documents": measured["documents"],
+                    "deviation_bytes": measured["total_bytes"] - config.total_size,
+                    "deviation": (measured["total_bytes"] - config.total_size) / config.total_size,
+                    "reached": measured["total_bytes"] >= config.total_size,
+                }
+                if config.total_size is not None
+                else None
+            ),
             "target": target,
             "warnings": warnings,
         }
@@ -302,6 +322,10 @@ def run_batch(config: BatchConfig) -> Iterator[dict]:
     Générateur : rend chaque enregistrement du manifeste ; sa valeur de retour
     (``StopIteration.value``) est le :class:`BatchReport` du lot.
     """
+    _validate(config)
+    for doc_type in config.doc_types:
+        get_generator(doc_type)
+    get_renderer(config.medium)
     config.out_dir.mkdir(parents=True, exist_ok=True)
     with (config.out_dir / ".synthetic-doc-gen.lock").open("a") as lock:
         try:
@@ -312,6 +336,14 @@ def run_batch(config: BatchConfig) -> Iterator[dict]:
 
 
 def _validate(config: BatchConfig) -> None:
+    if config.total_size is not None and (
+        not isinstance(config.total_size, int) or not 0 < config.total_size <= sys.maxsize
+    ):
+        raise ValueError("la taille totale doit être un entier strictement positif")
+    if config.max_count <= 0 or not 1 <= config.calibration_count <= 100:
+        raise ValueError("max-count doit être positif et calibration-count dans 1-100")
+    if config.total_size is not None and config.overwrite:
+        raise ValueError("--force est incompatible avec --total-size")
     if config.count < 0 or config.start_index < 0:
         raise ValueError("count et start_index doivent être positifs ou nuls")
     if not config.doc_types:
@@ -350,7 +382,8 @@ def _run_batch(config: BatchConfig) -> Iterator[dict]:
     for doc_type in config.doc_types:
         get_generator(doc_type)  # échoue tôt sur un type inconnu, quel que soit count
     renderer = get_renderer(config.medium)
-    plan = plan_documents(config)
+    total_mode = config.total_size is not None
+    plan = plan_documents(config) if not total_mode else []
 
     manifest_path = config.out_dir / MANIFEST_NAME
     report_path = config.out_dir / REPORT_NAME
@@ -376,7 +409,20 @@ def _run_batch(config: BatchConfig) -> Iterator[dict]:
     medium_dir = config.out_dir / config.medium
     if medium_dir.is_symlink():
         raise ValueError("le dossier du support ne doit pas être un lien symbolique")
-
+    if total_mode and medium_dir.is_dir():
+        for path in medium_dir.iterdir():
+            for doc_type in config.doc_types:
+                suffix = f"_{doc_type}.{renderer.extension}"
+                if path.name.startswith("SYN-") and path.name.endswith(suffix):
+                    index_text = path.name[4 : -len(suffix)]
+                    if (
+                        index_text.isdigit()
+                        and config.start_index
+                        <= int(index_text)
+                        < config.start_index + config.max_count
+                        and doc_type_for(int(index_text), config.doc_types) == doc_type
+                    ):
+                        raise FileExistsError(f"fichier cible existant : {path}")
     base_options = RenderOptions(logo=config.logo, signature=config.signature)
 
     def build(item: PlannedDocument) -> tuple[Document, int]:
@@ -411,11 +457,17 @@ def _run_batch(config: BatchConfig) -> Iterator[dict]:
 
     # Avant toute écriture : une page cible inatteignable échoue sans rien laisser dans le dossier.
     plan = [fit(item) if item.pages is not None else item for item in plan]
+    if total_mode and config.target_mean_bytes is not None:
+        sample_config = replace(config, count=min(config.calibration_count, config.max_count))
+        sample = plan_documents(sample_config)
+        sample = [fit(item) if item.pages is not None else item for item in sample]
+    else:
+        sample = plan
 
     calibration: Calibration | None = None
     if config.target_mean_bytes is not None:
         calibration = calibrate(
-            plan,
+            sample,
             target_mean_bytes=config.target_mean_bytes,
             color=config.scan_color,
             dpi=config.scan_dpi,
@@ -449,7 +501,32 @@ def _run_batch(config: BatchConfig) -> Iterator[dict]:
     manifest = manifest_path.open("r+b", buffering=0)
     records: list[dict] = []
     try:
-        for item, target in zip(plan, targets, strict=True):
+
+        def documents():
+            if not total_mode:
+                yield from zip(plan, targets, strict=True)
+                return
+            for index in range(config.start_index, config.start_index + config.max_count):
+                doc_type = doc_type_for(index, config.doc_types)
+                item = PlannedDocument(
+                    index,
+                    doc_type,
+                    is_scan(index, config.doc_types, config.scan_ratio),
+                    pages_for(config.base_seed, index, doc_type, config.pages)
+                    if config.pages
+                    else None,
+                )
+                item = fit(item) if item.pages is not None else item
+                yield (
+                    item,
+                    config.out_dir
+                    / _relative_path(
+                        config.medium, doc_id_for(index), doc_type, renderer.extension
+                    ),
+                )
+
+        total_bytes = 0
+        for item, target in documents():
             document, seed = build(item)
             options = scan_options if item.scan else base_options
             rendered = renderer.render(document, config.profile, doc_id_for(item.index), options)
@@ -477,11 +554,24 @@ def _run_batch(config: BatchConfig) -> Iterator[dict]:
                 manifest.truncate(position)
                 target.unlink(missing_ok=True)
                 raise
-            records.append(record)
+            records.append(
+                {
+                    "bytes": record["bytes"],
+                    "pages": record["pages"],
+                    "render": {"kind": record["render"]["kind"]},
+                }
+            )
+            total_bytes += record["bytes"]
             yield record
+            if total_mode and total_bytes >= config.total_size:
+                break
     finally:
         manifest.close()
     report = build_report(config, records, calibration)
+    if total_mode and not report.data["total_target"]["reached"]:
+        report.warnings.append(
+            f"taille totale non atteinte : limite max-count ({config.max_count})"
+        )
     payload = json.dumps(report.data, ensure_ascii=False, sort_keys=True, indent=2) + "\n"
     publish(report_path, payload.encode("utf-8"), replace=config.overwrite)
     return report
