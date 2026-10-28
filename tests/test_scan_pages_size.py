@@ -458,3 +458,107 @@ def test_cli_size_units():
     assert (_size("150k"), _size("1.5M"), _size("2048"), _size("2 Ko")) == (
         150_000, 1_500_000, 2048, 2000,
     )  # fmt: skip
+
+
+def test_replay_calibrated_settings_for_subset(make_config, tmp_path):
+    config = make_config(out_dir=tmp_path / "full", count=3, scan_ratio=1, target_mean_bytes=80000)
+    records, report = _run(config)
+    settings = report.data["scan_settings"]
+    subset = replace(
+        config,
+        out_dir=tmp_path / "subset",
+        count=1,
+        start_index=1,
+        target_mean_bytes=None,
+        scan_dpi=settings["dpi"],
+        scan_color=settings["color"],
+        scan_quality=settings["jpeg_quality"],
+    )
+    replay, _ = _run(subset)
+    assert replay[0]["sha256"] == records[1]["sha256"]
+    requested = report.data["requested"]
+    assert requested["start_index"] == 0
+    assert requested["doc_types"] == list(config.doc_types)
+    assert requested["target_mean_bytes"] == 80000
+    assert requested["profile"]["name"] == config.profile.name
+
+
+def test_bw_image_is_one_bit_and_global_setting_unchanged(make_config):
+    from reportlab import rl_config
+
+    previous = rl_config.useA85
+    config = make_config(count=1, scan_ratio=1, scan_color="bw", scan_dpi=72)
+    records, _ = _run(config)
+    assert rl_config.useA85 == previous
+    page = PdfReader(config.out_dir / records[0]["path"]).pages[0]
+    image = next(iter(page["/Resources"]["/XObject"].values())).get_object()
+    assert image["/BitsPerComponent"] == 1
+    assert image["/ColorSpace"] == "/DeviceGray"
+
+
+@pytest.mark.parametrize("value", ["inf", "1e999", "nan", "1e999m"])
+def test_nonfinite_target_size_rejected(value, tmp_path, capsys):
+    with pytest.raises(SystemExit):
+        main(["generate", "-o", str(tmp_path), "--target-size", value])
+    assert "taille" in capsys.readouterr().err
+
+
+def test_impossible_pages_identifies_document(make_config):
+    config = make_config(count=1, pages=(1, 1), signature=True)
+    from unittest.mock import patch
+
+    with (
+        patch("synthetic_doc_gen.batch.fit_pages", side_effect=ValueError("impossible")),
+        pytest.raises(ValueError, match=r"SYN-000000.*impossible"),
+    ):
+        _run(config)
+
+
+def test_scan_distribution_documented_bound():
+    types = ("a", "b", "c", "d", "e")
+    ratio = 0.73
+    flags = [is_scan(i, types, ratio) for i in range(150)]
+    for start in range(20):
+        for end in range(start, 100):
+            assert abs(sum(flags[start:end]) - (end - start) * ratio) < 2 * len(types)
+
+
+def test_calibration_uses_all_scan_page_counts(monkeypatch):
+    from synthetic_doc_gen import sizing
+    from synthetic_doc_gen.batch import PlannedDocument
+    from synthetic_doc_gen.renderers import Rendered
+
+    plan = [PlannedDocument(i, "a", True, None) for i in range(7)]
+    rendered = []
+
+    def native(item):
+        rendered.append(item.index)
+        return Rendered(data=b"pdf", pages=1 if item.index < 6 else 9)
+
+    monkeypatch.setattr(sizing.scan, "iter_rasters", lambda *args: iter([(1, 1, None)]))
+    monkeypatch.setattr(sizing.scan, "encode_page", lambda *args: None)
+    monkeypatch.setattr(sizing.scan, "encoded_size", lambda *args: 100)
+    result = sizing.calibrate(
+        plan, target_mean_bytes=10000, color="color", dpi=100, quality=75, render_native=native
+    )
+    assert rendered == list(range(7))
+    assert result.estimated_scan_bytes == pytest.approx(2000 + 125 * 15 / 7)
+
+
+def test_pagination_checks_limit_before_giving_up():
+    document, units = fit_pages(lambda n: n, lambda n: 2 if n == 80 else 1, 2)
+    assert document == units == 80
+
+
+@pytest.mark.parametrize("target", [float("inf"), float("nan"), 10**1000])
+def test_invalid_api_target_rejected(make_config, target):
+    with pytest.raises(ValueError, match="taille moyenne cible"):
+        _run(make_config(target_mean_bytes=target))
+
+
+def test_pillow_is_direct_dependency():
+    import tomllib
+    from pathlib import Path
+
+    project = tomllib.loads(Path("pyproject.toml").read_text())
+    assert any(dep.lower().startswith("pillow") for dep in project["project"]["dependencies"])

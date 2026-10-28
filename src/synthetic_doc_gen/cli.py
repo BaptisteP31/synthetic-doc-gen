@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import math
 import sys
 from collections.abc import Sequence
 from pathlib import Path
@@ -36,7 +37,7 @@ def _size(text: str) -> int:
         value = float(number.replace(",", ".")) * _SIZE_UNITS[unit]
     except (ValueError, KeyError):
         raise argparse.ArgumentTypeError(f"taille invalide : {text!r} (ex. 150k, 1.5M)") from None
-    if value < 1:
+    if not math.isfinite(value) or value < 1 or value > sys.maxsize:
         raise argparse.ArgumentTypeError("la taille doit être strictement positive")
     return round(value)
 

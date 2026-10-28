@@ -382,6 +382,7 @@ name = "synthetic-doc-gen"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
+    { name = "pillow" },
     { name = "pypdfium2" },
     { name = "reportlab" },
 ]
@@ -395,6 +396,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "pillow", specifier = ">=9.0" },
     { name = "pypdfium2", specifier = ">=5.14.0" },
     { name = "reportlab", specifier = ">=4.0" },
 ]

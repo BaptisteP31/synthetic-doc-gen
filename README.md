@@ -77,26 +77,37 @@ ces options, les fichiers sont identiques, octet pour octet, à ceux des version
 **Répartition natifs / scans.** Déterministe : la décision ne dépend que de l'index, des types
 et de la proportion, avec une répartition régulière dans chaque type (pas de corrélation avec la
 rotation des types). Un sous-lot (`--start-index`) retrouve les mêmes choix ; le nombre de scans
-est à un document près de `n × R`.
+a un écart strictement inférieur au nombre de types par rapport à `n × R` pour un préfixe
+commençant à zéro, et inférieur à deux fois ce nombre pour un sous-lot quelconque.
 
 **Nombre de pages.** Le contenu de base du document est inchangé ; on y ajoute du contenu réel
 (notes de suivi datées pour un compte rendu, bilans antérieurs pour un bilan biologique,
 cohérents avec l'âge et le sexe du patient) jusqu'à obtenir *exactement* le nombre de pages,
 mesuré sur le rendu. Les `entities` du manifeste décrivent le document principal. Si le contenu
 de base dépasse déjà la cible (ex. 1 page avec un profil très dense, un logo et une signature),
-la génération échoue **avant toute écriture**.
+la génération échoue **avant écriture des documents et du manifeste**, avec l’identifiant du
+document concerné. Une cible peut aussi être impossible si le contenu ajouté saute le nombre
+de pages demandé, notamment avec une signature ; choisissez une autre cible ou un autre profil.
 
 **Taille moyenne cible (au mieux, sans remplissage).** Aucun octet inutile n'est ajouté. Le
 poids d'un PDF natif vient de son contenu (≈ 3-5 ko par page) ; seul celui des scans se règle,
 par la résolution puis, en butée, la qualité JPEG, dans des plages réalistes (100-400 dpi,
 qualité 40-95). Le réglage est calculé avant toute écriture, sur un échantillon de pages
-réellement rendues, en déduisant la contribution mesurée des natifs ; les réglages imposés
+réellement rendues et le nombre réel de pages de tous les scans, en déduisant la contribution
+mesurée des natifs ; les réglages imposés
 (`--scan-dpi`, `--scan-quality`) ne sont jamais modifiés. La moyenne **réelle** est ensuite
 mesurée sur les fichiers écrits (`report.json`, résumé en fin de commande) ; si elle s'écarte de
 la cible au-delà de la tolérance, ou si la cible est hors de portée (aucun scan, réglages
 imposés, limites réalistes), un **avertissement** est affiché sur stderr et consigné dans le
 rapport (`warnings`), sans échec de la commande. Pour une cible plus haute, augmenter la
 proportion de scans ou le nombre de pages.
+
+La calibration dépend du lot entier : relancer `--target-size` sur un sous-lot peut choisir
+d’autres réglages. Pour reproduire les octets d’un sous-lot, relevez `scan_settings` dans le
+`report.json` du lot initial et relancez avec les mêmes options de contenu et de scan,
+`--start-index`, `--scan-dpi`, `--scan-color` et `--scan-quality` correspondants, sans
+`--target-size`. En mode `bw`, la qualité JPEG est sans effet. Les versions et la plateforme
+doivent aussi être identiques.
 
 `report.json` : paramètres demandés, mesures (total, moyenne, min/max, pages, ventilation
 natifs/scans, proportion effective), réglages de scan retenus, bloc `target` (écart, `reached`,
@@ -130,13 +141,13 @@ et longueur du contenu. Il fait partie des entrées du déterminisme.
 La graine d'un document est `SHA-256("{graine_lot}:{index}:{type}")` tronquée à 64 bits : chaque
 document a sa propre graine, indépendante du nombre de documents et des autres documents du lot.
 Le contenu est donc une fonction pure de *(graine de lot, index, type, profil)* ; `--start-index`
-permet de régénérer un sous-ensemble à l'identique. Le moteur PDF utilise `invariant=1` de
+permet de régénérer un sous-ensemble à l'identique avec les mêmes réglages de rendu. Le moteur PDF utilise `invariant=1` de
 ReportLab (dates et identifiants internes figés).
 
 **Garantie** : même entrées + même environnement (versions de Python, ReportLab et, pour les
 scans, pdfium et Pillow/libjpeg) ⇒ même fichier, octet pour octet (vérifié par les tests). La
-proportion de scans, le nombre de pages tiré par document et les réglages ajustés par la taille
-cible sont eux aussi déterministes ; les entrées incluent donc ces options. **Pas de promesse d'identité binaire
+proportion de scans et le nombre de pages tiré par document sont stables pour un sous-lot.
+La calibration est déterministe pour un même lot, mais dépend de sa composition. **Pas de promesse d'identité binaire
 inter-plateformes ou inter-versions** : le contenu logique comme les octets peuvent changer selon les versions du logiciel ou de ses
 dépendances, de Python ou la plateforme. Le manifeste enregistre les versions utilisées.
 

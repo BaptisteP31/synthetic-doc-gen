@@ -11,12 +11,10 @@ from __future__ import annotations
 import io
 import zlib
 from collections.abc import Iterator, Sequence
-from contextlib import contextmanager
 from dataclasses import dataclass
 
 import pypdfium2
 from PIL import Image
-from reportlab import rl_config
 from reportlab.lib.utils import ImageReader
 from reportlab.pdfgen.canvas import Canvas
 
@@ -28,7 +26,7 @@ BW_THRESHOLD = 160
 
 @dataclass(frozen=True)
 class ScanPage:
-    """Page numérisée prête à être assemblée : JPEG, ou image 8 bits noir/blanc."""
+    """Page numérisée prête à être assemblée : JPEG, ou image 1 bit noir/blanc."""
 
     width_pt: float
     height_pt: float
@@ -66,7 +64,7 @@ def iter_rasters(
 
 
 def _binarize(image: Image.Image) -> Image.Image:
-    return image.convert("L").point(lambda value: 255 if value >= BW_THRESHOLD else 0)
+    return image.convert("L").point(lambda value: 255 if value >= BW_THRESHOLD else 0).convert("1")
 
 
 def encode_page(
@@ -88,43 +86,35 @@ def encoded_size(page: ScanPage) -> int:
     return len(zlib.compress(page.image.tobytes(), 6))
 
 
-@contextmanager
-def _binary_streams() -> Iterator[None]:
-    """Désactive l'ASCII85 de ReportLab pour les images : sinon +25 % d'octets sans gain.
-
-    Réglage global de ReportLab, restauré aussitôt ; il ne touche pas les PDF natifs.
-    """
-    previous = rl_config.useA85
-    rl_config.useA85 = 0
-    try:
-        yield
-    finally:
-        rl_config.useA85 = previous
-
-
 def assemble(
     pages: Sequence[ScanPage], *, title: str, subject: str, keywords: str, creator: str
 ) -> bytes:
     buffer = io.BytesIO()
-    with _binary_streams():
-        canvas = Canvas(
-            buffer,
-            pagesize=(pages[0].width_pt, pages[0].height_pt),
-            invariant=1,
-            pageCompression=1,
-            initialFontName="Helvetica",
-        )
-        canvas.setTitle(title)
-        canvas.setAuthor("synthetic-doc-gen")
-        canvas.setSubject(subject)
-        canvas.setKeywords(keywords)
-        canvas.setCreator(creator)
-        for page in pages:
-            canvas.setPageSize((page.width_pt, page.height_pt))
-            source = io.BytesIO(page.jpeg) if page.jpeg is not None else page.image
-            canvas.drawImage(ImageReader(source), 0, 0, page.width_pt, page.height_pt)
-            canvas.showPage()
-        canvas.save()
+    canvas = Canvas(
+        buffer,
+        pagesize=(pages[0].width_pt, pages[0].height_pt),
+        invariant=1,
+        pageCompression=1,
+        initialFontName="Helvetica",
+    )
+    canvas.setTitle(title)
+    canvas.setAuthor("synthetic-doc-gen")
+    canvas.setSubject(subject)
+    canvas.setKeywords(keywords)
+    canvas.setCreator(creator)
+    for page in pages:
+        canvas.setPageSize((page.width_pt, page.height_pt))
+        source = io.BytesIO(page.jpeg) if page.jpeg is not None else page.image
+        info = {"imgObj": None}
+        canvas.drawImage(ImageReader(source), 0, 0, page.width_pt, page.height_pt, extraReturn=info)
+        if page.image is not None:
+            obj = info["imgObj"]
+            obj.bitsPerComponent = 1
+            obj.colorSpace = "DeviceGray"
+            obj.streamContent = zlib.compress(page.image.tobytes())
+            obj._filters = ("FlateDecode",)
+        canvas.showPage()
+    canvas.save()
     return buffer.getvalue()
 
 

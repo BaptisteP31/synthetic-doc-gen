@@ -131,12 +131,20 @@ def calibrate(
         )
         needed = 1.0
 
-    sample = [render_native(item) for item in spread(scans, SAMPLE_SCANS)]
+    rendered_scans = [render_native(item) for item in scans]
+    sample = spread(rendered_scans, SAMPLE_SCANS)
     pool = [
-        (doc, page) for doc, rendered in enumerate(sample) for page in range(rendered.pages or 1)
+        (doc, page)
+        for doc, rendered in enumerate(sample)
+        for page in range(
+            rendered.pages if rendered.pages is not None else scan.page_count(rendered.data)
+        )
     ]
     pool = spread(pool, SAMPLE_PAGES)
-    pages_per_scan = sum(rendered.pages or 1 for rendered in sample) / len(sample)
+    pages_per_scan = sum(
+        rendered.pages if rendered.pages is not None else scan.page_count(rendered.data)
+        for rendered in rendered_scans
+    ) / len(rendered_scans)
 
     def estimate(settings: ScanSettings) -> float:
         sizes: list[int] = []
@@ -144,7 +152,10 @@ def calibrate(
             pages = [p for d, p in pool if d == doc]
             for width, height, raster in scan.iter_rasters(sample[doc].data, settings.dpi, pages):
                 sizes.append(scan.encoded_size(scan.encode_page(width, height, raster, settings)))
-        return sum(sizes) / len(sizes) * pages_per_scan
+        return (
+            sum(sizes) / len(sizes) * pages_per_scan * (1 if settings.color == "bw" else 1.25)
+            + 2000
+        )
 
     free_dpi = dpi is None
     free_quality = quality is None and color != "bw"

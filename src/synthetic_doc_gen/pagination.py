@@ -38,9 +38,9 @@ def fit_pages(
     limit = target * MAX_UNITS_PER_PAGE
     low, high = 0, 1
     while measure(high) < target:
-        low, high = high, high * 2
-        if high > limit:
+        if high == limit:
             raise ValueError(f"impossible d'atteindre {target} pages")
+        low, high = high, min(high * 2, limit)
     while high - low > 1:
         middle = (low + high) // 2
         if measure(middle) < target:

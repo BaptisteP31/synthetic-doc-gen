@@ -9,6 +9,7 @@ import math
 import os
 import platform
 import secrets
+import sys
 from collections.abc import Iterator, Sequence
 from dataclasses import asdict, dataclass, field, replace
 from fractions import Fraction
@@ -114,9 +115,10 @@ def is_scan(index: int, doc_types: Sequence[str], ratio: float) -> bool:
     Répartition régulière (Bresenham) *au sein de chaque type* : sans corrélation avec la
     rotation des types, et un sous-lot (``--start-index``) retrouve les mêmes choix. Chaque
     type reçoit ``floor(n * ratio + décalage)`` scans sur ses ``n`` premiers documents ; les
-    décalages sont étagés entre types pour que le total reste à un scan près de ``n * ratio``.
+    décalages sont étagés entre types ; l'erreur totale est strictement inférieure au
+    nombre de types pour un préfixe, et inférieure à deux fois ce nombre pour un sous-lot.
     """
-    share = Fraction(ratio).limit_denominator(10_000)
+    share = Fraction(ratio)
     rank, position = divmod(index, len(doc_types))
     offset = Fraction(position + 1, len(doc_types) + 1)
     return math.floor((rank + 1) * share + offset) > math.floor(rank * share + offset)
@@ -254,6 +256,13 @@ def build_report(
             "base_seed": config.base_seed,
             "requested": {
                 "count": config.count,
+                "start_index": config.start_index,
+                "doc_types": list(config.doc_types),
+                "profile": json.loads(json.dumps(asdict(config.profile))),
+                "medium": config.medium,
+                "overwrite": config.overwrite,
+                "target_mean_bytes": config.target_mean_bytes,
+                "target_tolerance": config.target_tolerance,
                 "scan_ratio": config.scan_ratio,
                 "pages": list(config.pages) if config.pages else None,
                 "logo": config.logo,
@@ -313,7 +322,13 @@ def _validate(config: BatchConfig) -> None:
         low, high = config.pages
         if not 1 <= low <= high <= MAX_PAGES:
             raise ValueError(f"pages : intervalle attendu dans 1-{MAX_PAGES}, reçu {config.pages}")
-    if config.target_mean_bytes is not None and config.target_mean_bytes <= 0:
+    if config.target_mean_bytes is not None and (
+        (
+            isinstance(config.target_mean_bytes, float)
+            and not math.isfinite(config.target_mean_bytes)
+        )
+        or not 0 < config.target_mean_bytes <= sys.maxsize
+    ):
         raise ValueError("la taille moyenne cible doit être strictement positive")
     if not 0 < config.target_tolerance <= 1:
         raise ValueError("la tolérance de taille doit être dans ]0, 1]")
@@ -376,13 +391,16 @@ def _run_batch(config: BatchConfig) -> Iterator[dict]:
         def native_pages(document: Document) -> int:
             return renderer.render_native(document, config.profile, doc_id, base_options).pages
 
-        _, units = fit_pages(
-            lambda k: build_document(
-                item.index, config.base_seed, item.doc_type, config.profile, k
-            )[0],
-            native_pages,
-            item.pages,
-        )
+        try:
+            _, units = fit_pages(
+                lambda k: build_document(
+                    item.index, config.base_seed, item.doc_type, config.profile, k
+                )[0],
+                native_pages,
+                item.pages,
+            )
+        except ValueError as exc:
+            raise ValueError(f"{doc_id} ({item.doc_type}) : {exc}") from exc
         return replace(item, units=units)
 
     def render_native(item: PlannedDocument) -> Rendered:
